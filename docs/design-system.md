@@ -9,7 +9,7 @@ Use the color tokens, typography, and motion principles exactly as specified.
 
 **Name:** Thuki (pronounced "too-kee", from Vietnamese "thư kí" meaning secretary)
 
-**Tagline:** _A context-aware floating AI assistant for macOS. Fully local, free, works everywhere._
+**Tagline:** _A context-aware floating AI assistant for Windows. Fully local, free, works everywhere._
 
 **One-liner:** Double-tap Control and Thuki pops up right on top of whatever you're
 working on, even fullscreen apps. Ask a question, get an answer, toss the convo, back
@@ -17,7 +17,7 @@ to work. All in one Space.
 
 **Personality:** Calm, minimal, precise. Personal, not corporate. Built by someone who
 wanted this tool and couldn't find it. The vibe is a focused utility that respects your
-attention and your privacy. Think: Arc browser meets macOS Spotlight.
+attention and your privacy. Think: Arc browser meets Windows Win+C.
 
 **Target audience:** Developers and power users who want fast AI answers without
 switching apps, creating accounts, or sending data to a server.
@@ -94,14 +94,14 @@ Use these exact values. No substitution.
 
 Thuki has two distinct visual states. Both are centered on screen (or near the cursor).
 
-### Bar Mode (compact, Spotlight-style)
+### Bar Mode (compact, Win+C-style)
 
 - Width: 600px logical
 - Height: ~80px
 - Border radius: 16px
 - Content: Thuki logo (left) + text input (center) + send button (right)
 - The window background is nearly opaque warm dark with the ambient top glow.
-- Feels like macOS Spotlight: minimal, surgical, focused.
+- Feels like Windows Win+C: minimal, surgical, focused.
 
 ### Chat Mode (expanded)
 
@@ -114,7 +114,7 @@ Thuki has two distinct visual states. Both are centered on screen (or near the c
 ### Window Controls (chat mode only)
 
 Small row at top of chat window: close button (left), history button (center-left),
-new conversation button (right). Minimal macOS-native feel.
+new conversation button (right). Minimal Windows-native feel.
 
 ---
 

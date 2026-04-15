@@ -1,11 +1,11 @@
 # Configurations
 
-Thuki uses environment variables for runtime configuration. Vite loads these from `.env` files at build/dev time and exposes variables prefixed with `VITE_` to the frontend via `import.meta.env`.
+ThukiWin uses environment variables for runtime configuration. Vite loads these from `.env` files at build/dev time and exposes variables prefixed with `VITE_` to the frontend via `import.meta.env`.
 
 ## Setup
 
-```bash
-cp .env.example .env
+```powershell
+copy .env.example .env
 ```
 
 Edit `.env` to override any defaults. Changes take effect on the next `bun run dev` or `bun run build:all`.
@@ -38,19 +38,19 @@ Controls which Ollama model(s) Thuki uses for inference.
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `THUKI_SUPPORTED_AI_MODELS` | Comma-separated list of Ollama model names. The first entry is the active model used for all inference. Additional entries are available for future in-app model switching. | `gemma4:e2b` |
+| `THUKI_SUPPORTED_AI_MODELS` | Comma-separated list of Ollama model names. The first entry is the active model used for all inference. Additional entries are available for future in-app model switching. | `gemini-3-flash-preview` |
 
 **Example:**
 
 ```bash
 # Single model (default behavior)
-THUKI_SUPPORTED_AI_MODELS=gemma4:e2b
+THUKI_SUPPORTED_AI_MODELS=gemini-3-flash-preview
 
 # Multiple models (first is active; others available for future UI picker)
-THUKI_SUPPORTED_AI_MODELS=gemma4:e2b,gemma4:e4b
+THUKI_SUPPORTED_AI_MODELS=gemini-3-flash-preview,gemma4:e2b
 ```
 
-Whitespace around each entry is trimmed. Empty entries are ignored. If the variable is unset or empty, Thuki falls back to `gemma4:e2b`.
+Whitespace around each entry is trimmed. Empty entries are ignored. If the variable is unset or empty, ThukiWin falls back to `gemini-3-flash-preview`.
 
 ### Validation Rules
 

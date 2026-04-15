@@ -1,11 +1,11 @@
 [package]
 name = "thuki"
-version = "0.6.1"
-description = "Thuki: The context-aware floating secretary"
-authors = ["Logan Nguyen"]
+version = "0.1.0"
+description = "ThukiWin: The context-aware floating secretary for Windows"
+authors = ["ayzekhdawy"]
 license = "Apache-2.0"
-repository = "https://github.com/quiet-node/thuki"
-homepage = "https://github.com/quiet-node/thuki"
+repository = "https://github.com/ayzekhdawy/thukiwin"
+homepage = "https://github.com/ayzekhdawy/thukiwin"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

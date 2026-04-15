@@ -1,4 +1,4 @@
-# Contributing to Thuki
+# Contributing to ThukiWin
 
 Thank you for your interest in contributing! This guide will walk you through everything you need to get started.
 
@@ -15,41 +15,40 @@ Thank you for your interest in contributing! This guide will walk you through ev
 
 ## Prerequisites
 
-You'll need the following tools installed before you can build Thuki:
+You'll need the following tools installed before you can build ThukiWin:
 
 ### Required
 
 **Bun:** JavaScript runtime and package manager
 
-```bash
-curl -fsSL https://bun.sh/install | bash
+```powershell
+powershell -c "irm bun.sh/install.ps1 | iex"
 ```
 
 **Rust:** required for the Tauri backend
 
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+Install via [rustup.rs](https://rustup.rs)
+
+After installation, restart your terminal. ThukiWin builds against stable Rust.
+
+Running the coverage suite (required before submitting a PR) also needs the nightly toolchain with `llvm-tools`:
+
+```powershell
+rustup toolchain install nightly --component llvm-tools
 ```
 
-After installation, restart your shell or run `source ~/.cargo/env` to make `cargo` available. Thuki builds against stable Rust.
+**Microsoft Visual Studio Build Tools 2022:** required for compiling the Rust backend on Windows
 
-Running the coverage suite (required before submitting a PR) also needs the `nightly-2026-03-30` toolchain with `llvm-tools`:
+1. Download from [visualstudio.microsoft.com](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+2. Install the **C++ build tools** workload with **MSVC v143** and **Windows 10/11 SDK**
 
-```bash
-rustup toolchain install nightly-2026-03-30 --component llvm-tools
-```
-
-**macOS:** Thuki is macOS-only. It uses NSPanel and Core Graphics APIs that are not available on other platforms.
+**Windows:** ThukiWin is a Windows application. It uses Win32 APIs (`SetWindowsHookExW`, GDI `BitBlt`, `SendInput`, clipboard APIs) for hotkey detection, screen capture, and context capture.
 
 ### Optional
 
-**Docker:** only needed if you want to run the isolated Docker sandbox instead of a local Ollama install
+**Ollama:** required at runtime for AI inference
 
-- Install via [docker.com](https://www.docker.com/get-started)
-
-**Ollama:** if you're not using the Docker sandbox, install Ollama directly
-
-- Install via [ollama.com](https://ollama.com)
+- Install via [ollama.com](https://ollama.com) or `winget install Ollama.Ollama`
 
 ---
 
@@ -57,52 +56,42 @@ rustup toolchain install nightly-2026-03-30 --component llvm-tools
 
 1. **Fork and clone the repository**
 
-   ```bash
-   git clone https://github.com/quiet-node/thuki.git
-   cd thuki
+   ```powershell
+   git clone https://github.com/ayzekhdawy/thukiwin.git
+   cd thukiwin
    ```
 
 2. **Install frontend dependencies**
 
-   ```bash
+   ```powershell
    bun install
    ```
 
-3. **Set up your AI backend** (choose one):
-
-   **Option A: Docker sandbox (recommended for isolation)**
-
-   ```bash
-   bun run sandbox:start
-   ```
-
-   This pulls the default model (`gemma4:e2b`) and starts the hardened container. It may take a few minutes on first run.
-
-   **Option B: Local Ollama**
+3. **Set up your AI backend**
 
    Make sure Ollama is running and you have a model pulled:
 
-   ```bash
-   ollama pull gemma4:e2b
+   ```powershell
+   ollama pull gemini-3-flash-preview
    ```
 
-   Thuki connects to `http://127.0.0.1:11434` by default.
+   ThukiWin connects to `http://127.0.0.1:11434` by default.
 
 4. **Configure environment** (optional)
 
-   ```bash
-   cp .env.example .env
+   ```powershell
+   copy .env.example .env
    ```
 
    Edit `.env` to customize quote display behavior or the system prompt. See [docs/configurations.md](docs/configurations.md) for all available options.
 
 5. **Launch the app**
 
-   ```bash
+   ```powershell
    bun run dev
    ```
 
-   On first run, macOS will prompt for Accessibility permission. This is required for the global keyboard shortcut. Grant it once; it persists across restarts.
+   No special permissions needed on Windows. The global hotkey and screen capture work out of the box.
 
 ---
 
@@ -112,7 +101,7 @@ rustup toolchain install nightly-2026-03-30 --component llvm-tools
 
 ### Frontend tests (Vitest + React Testing Library)
 
-```bash
+```powershell
 bun run test              # Run all frontend tests
 bun run test:watch        # Watch mode
 bun run test:coverage     # Run with coverage report
@@ -122,14 +111,14 @@ Coverage output is in `coverage/`. Open `coverage/index.html` in a browser for a
 
 ### Backend tests (Cargo)
 
-```bash
+```powershell
 bun run test:backend           # Run all Rust tests
 bun run test:backend:coverage  # Run with 100% line coverage enforcement
 ```
 
 ### Run everything
 
-```bash
+```powershell
 bun run test:all           # Both frontend and backend tests
 bun run test:all:coverage  # Both with coverage enforcement
 ```
@@ -138,7 +127,7 @@ bun run test:all:coverage  # Both with coverage enforcement
 
 Before submitting a PR, run the full validation suite:
 
-```bash
+```powershell
 bun run validate-build
 ```
 
@@ -150,7 +139,7 @@ This runs lint, format check, typecheck, and build in sequence. All must pass wi
 
 **Formatting and linting are enforced by CI.** To avoid failed PR checks, run these locally before pushing:
 
-```bash
+```powershell
 bun run format   # Auto-format TypeScript/CSS (Prettier) and Rust (cargo fmt)
 bun run lint     # ESLint + cargo clippy
 ```
@@ -166,7 +155,7 @@ Key style rules:
 
 1. **Create a branch** from `main`
 
-   ```bash
+   ```powershell
    git checkout -b feat/your-feature-name
    ```
 
@@ -176,7 +165,7 @@ Key style rules:
 
 4. **Run the validation suite**
 
-   ```bash
+   ```powershell
    bun run test:all:coverage
    bun run validate-build
    ```
@@ -204,6 +193,6 @@ Key style rules:
 
 ## Good First Issues
 
-New to the codebase? Look for issues tagged [`good first issue`](https://github.com/quiet-node/thuki/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) on GitHub. These are scoped to be approachable without deep knowledge of the full system.
+New to the codebase? Look for issues tagged [`good first issue`](https://github.com/ayzekhdawy/thukiwin/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) on GitHub. These are scoped to be approachable without deep knowledge of the full system.
 
 If you have a question or want to discuss an approach before writing code, open an issue or start a discussion; we're happy to help.

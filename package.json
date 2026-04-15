@@ -1,13 +1,13 @@
 {
-  "name": "thuki",
-  "version": "0.6.1",
-  "description": "A floating AI secretary for macOS, powered by local Ollama models",
+  "name": "thukiwin",
+  "version": "0.1.0",
+  "description": "A floating AI secretary for Windows, powered by local Ollama models",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/quiet-node/thuki"
+    "url": "https://github.com/ayzekhdawy/thukiwin"
   },
-  "homepage": "https://github.com/quiet-node/thuki",
+  "homepage": "https://github.com/ayzekhdawy/thukiwin",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",

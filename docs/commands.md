@@ -28,7 +28,7 @@ Captures your screen and attaches it as context for the current message.
 
 **Limit:** One `/screen` capture per message. You may also attach up to 3 images manually (paste, drag, or the camera button) for a total of 4 images per message.
 
-**Permission:** Requires Screen Recording permission. On first use, macOS will prompt you to grant it. If denied, Thuki cannot capture the screen. Grant access in System Settings > Privacy & Security > Screen Recording.
+**Permission:** On Windows, no special permission is needed — screen capture works out of the box.
 
 ---
 
