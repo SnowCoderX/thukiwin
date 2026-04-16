@@ -6,23 +6,24 @@
 //! - Permission stubs (Windows has no TCC equivalent)
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{BOOL, LPARAM, LRESULT, POINT, WPARAM};
+use windows::core::BOOL;
+use windows::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_TYPE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, VK_CONTROL, VK_C,
+    SendInput, INPUT, INPUT_0, INPUT_TYPE, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_C,
+    VK_CONTROL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-    WH_KEYBOARD_LL, KBDLLHOOKSTRUCT, MSG, GetCursorPos,
+    CallNextHookEx, GetCursorPos, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+    KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
 };
-use windows::Win32::System::DataExchange::{
-    CloseClipboard, GetClipboardData, OpenClipboard, SetClipboardData, EmptyClipboard,
-};
-use windows::Win32::System::Ole::CF_UNICODETEXT;
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 
 use crate::context::ActivationContext;
 
@@ -125,9 +126,7 @@ impl OverlayActivator {
 fn run_hook_loop(is_active: Arc<AtomicBool>) {
     GLOBAL_HOOK_ACTIVE.store(true, Ordering::SeqCst);
 
-    let hook = unsafe {
-        SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_callback), None, 0)
-    };
+    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook_callback), None, 0) };
 
     match hook {
         Ok(hook_handle) => {
@@ -194,18 +193,66 @@ unsafe extern "system" fn keyboard_hook_callback(
 
 fn current_mouse_position() -> (f64, f64) {
     let mut point = POINT { x: 0, y: 0 };
-    unsafe { let _ = GetCursorPos(&mut point); }
+    unsafe {
+        let _ = GetCursorPos(&mut point);
+    }
     (point.x as f64, point.y as f64)
 }
 
 fn simulate_ctrl_c() {
     let inputs: [INPUT; 4] = [
-        INPUT { r#type: INPUT_TYPE(1), Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_CONTROL, wScan: 0, dwFlags: KEYBD_EVENT_FLAGS(0), time: 0, dwExtraInfo: 0 } } },
-        INPUT { r#type: INPUT_TYPE(1), Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_C, wScan: 0, dwFlags: KEYBD_EVENT_FLAGS(0), time: 0, dwExtraInfo: 0 } } },
-        INPUT { r#type: INPUT_TYPE(1), Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_C, wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } } },
-        INPUT { r#type: INPUT_TYPE(1), Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_CONTROL, wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } } },
+        INPUT {
+            r#type: INPUT_TYPE(1),
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_CONTROL,
+                    wScan: 0,
+                    dwFlags: KEYBD_EVENT_FLAGS(0),
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_TYPE(1),
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_C,
+                    wScan: 0,
+                    dwFlags: KEYBD_EVENT_FLAGS(0),
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_TYPE(1),
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_C,
+                    wScan: 0,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_TYPE(1),
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_CONTROL,
+                    wScan: 0,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
     ];
-    unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32); }
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
 }
 
 fn clipboard_text() -> String {
@@ -243,7 +290,10 @@ fn write_clipboard(text: &str) {
             if !ptr.is_null() {
                 std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
                 let _ = GlobalUnlock(h_mem);
-                let _ = SetClipboardData(CF_UNICODETEXT.0 as u32, windows::Win32::Foundation::HANDLE(h_mem.0));
+                let _ = SetClipboardData(
+                    CF_UNICODETEXT.0 as u32,
+                    Some(windows::Win32::Foundation::HANDLE(h_mem.0)),
+                );
             }
         }
         let _ = CloseClipboard();

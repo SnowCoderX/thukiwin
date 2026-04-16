@@ -26,8 +26,7 @@ use tokio_util::sync::CancellationToken;
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 /// Publicly known client token used by Edge browsers for the Speech Service.
-const TRUSTED_CLIENT_TOKEN: &str =
-    "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
+const TRUSTED_CLIENT_TOKEN: &str = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 
 /// Edge browser version used in Sec-MS-GEC-Version header.
 const EDGE_VERSION: &str = "143.0.3650.75";
@@ -338,8 +337,7 @@ fn chrono_like_timestamp() -> String {
     let weekday = days_to_weekday(days_since_epoch);
 
     let month_names = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     let weekday_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -458,11 +456,15 @@ pub async fn synthesize(
     );
     request.headers_mut().insert(
         "Pragma",
-        "no-cache".parse().map_err(|e| format!("Invalid Pragma header: {e}"))?,
+        "no-cache"
+            .parse()
+            .map_err(|e| format!("Invalid Pragma header: {e}"))?,
     );
     request.headers_mut().insert(
         "Cache-Control",
-        "no-cache".parse().map_err(|e| format!("Invalid Cache-Control header: {e}"))?,
+        "no-cache"
+            .parse()
+            .map_err(|e| format!("Invalid Cache-Control header: {e}"))?,
     );
     request.headers_mut().insert(
         "User-Agent",
@@ -608,7 +610,10 @@ pub async fn list_voices(client: &reqwest::Client) -> Result<Vec<TtsVoice>, Stri
     }
 
     if !response.status().is_success() {
-        return Err(format!("Voices endpoint returned HTTP {}", response.status()));
+        return Err(format!(
+            "Voices endpoint returned HTTP {}",
+            response.status()
+        ));
     }
 
     // Try to parse the response body as text first, then as JSON.
@@ -619,8 +624,12 @@ pub async fn list_voices(client: &reqwest::Client) -> Result<Vec<TtsVoice>, Stri
         .await
         .map_err(|e| format!("Failed to read voices response: {e}"))?;
 
-    let voices: Vec<TtsVoice> = serde_json::from_str(&body)
-        .map_err(|e| format!("Failed to parse voices JSON: {e} (body preview: {})", &body[..body.len().min(200)]))?;
+    let voices: Vec<TtsVoice> = serde_json::from_str(&body).map_err(|e| {
+        format!(
+            "Failed to parse voices JSON: {e} (body preview: {})",
+            &body[..body.len().min(200)]
+        )
+    })?;
 
     Ok(voices)
 }
@@ -675,9 +684,7 @@ pub fn tts_stop(tts_state: State<'_, TtsState>) -> Result<(), String> {
 /// Returns the list of available Edge TTS voices.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub async fn tts_list_voices(
-    client: State<'_, reqwest::Client>,
-) -> Result<Vec<TtsVoice>, String> {
+pub async fn tts_list_voices(client: State<'_, reqwest::Client>) -> Result<Vec<TtsVoice>, String> {
     list_voices(&client).await
 }
 
@@ -774,10 +781,7 @@ mod tests {
     #[test]
     fn build_ws_url_contains_trusted_client_token() {
         let url = build_ws_url();
-        assert!(url.contains(&format!(
-            "TrustedClientToken={}",
-            TRUSTED_CLIENT_TOKEN
-        )));
+        assert!(url.contains(&format!("TrustedClientToken={}", TRUSTED_CLIENT_TOKEN)));
     }
 
     #[test]
@@ -1171,13 +1175,15 @@ mod tests {
     #[test]
     fn chrono_like_timestamp_contains_weekday() {
         let ts = chrono_like_timestamp();
-        assert!(ts.contains("Sun")
-            || ts.contains("Mon")
-            || ts.contains("Tue")
-            || ts.contains("Wed")
-            || ts.contains("Thu")
-            || ts.contains("Fri")
-            || ts.contains("Sat"));
+        assert!(
+            ts.contains("Sun")
+                || ts.contains("Mon")
+                || ts.contains("Tue")
+                || ts.contains("Wed")
+                || ts.contains("Thu")
+                || ts.contains("Fri")
+                || ts.contains("Sat")
+        );
     }
 
     #[test]

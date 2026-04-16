@@ -525,6 +525,8 @@ pub async fn capture_full_screen_command(app_handle: tauri::AppHandle) -> Result
 #[cfg(target_os = "windows")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub async fn capture_screenshot_command(app_handle: tauri::AppHandle) -> Result<Option<String>, String> {
+pub async fn capture_screenshot_command(
+    app_handle: tauri::AppHandle,
+) -> Result<Option<String>, String> {
     crate::windows_screenshot::capture_screenshot_command(app_handle).await
 }

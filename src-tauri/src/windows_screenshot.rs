@@ -2,12 +2,12 @@
 
 use tauri::Manager;
 
+use windows::core::PCWSTR;
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDCW, DeleteDC, DeleteObject,
     GetBitmapBits, SelectObject, SRCCOPY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-use windows::core::PCWSTR;
 
 /// Captures the full screen using GDI BitBlt and returns raw RGBA pixel bytes.
 #[cfg(target_os = "windows")]
@@ -30,13 +30,19 @@ pub fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
             None,
         );
 
-        let mem_dc = CreateCompatibleDC(screen_dc);
+        let mem_dc = CreateCompatibleDC(Some(screen_dc));
         let bitmap = CreateCompatibleBitmap(screen_dc, screen_width, screen_height);
-        let _old_bitmap = SelectObject(mem_dc, bitmap);
+        let _old_bitmap = SelectObject(mem_dc, bitmap.into());
 
         let _ = BitBlt(
-            mem_dc, 0, 0, screen_width, screen_height,
-            screen_dc, 0, 0,
+            mem_dc,
+            0,
+            0,
+            screen_width,
+            screen_height,
+            Some(screen_dc),
+            0,
+            0,
             SRCCOPY,
         );
 
@@ -51,7 +57,7 @@ pub fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
         );
 
         SelectObject(mem_dc, _old_bitmap);
-        let _ = DeleteObject(bitmap);
+        let _ = DeleteObject(bitmap.into());
         let _ = DeleteDC(mem_dc);
         let _ = DeleteDC(screen_dc);
 

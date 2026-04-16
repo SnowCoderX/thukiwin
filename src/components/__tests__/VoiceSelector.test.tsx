@@ -96,8 +96,8 @@ describe('VoiceSelector', () => {
     fireEvent.click(trigger);
     const allButtons = screen.getAllByText('tr-TR-EmelNeural');
     // The one in the dropdown list (inside a button) should be selected
-    const dropdownButton = allButtons.find(
-      (el) => el.closest('button')?.className.includes('bg-white/20'),
+    const dropdownButton = allButtons.find((el) =>
+      el.closest('button')?.className.includes('bg-white/20'),
     );
     expect(dropdownButton).toBeTruthy();
   });

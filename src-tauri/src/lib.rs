@@ -32,9 +32,9 @@ pub mod context;
 pub mod permissions;
 
 #[cfg(target_os = "windows")]
-mod windows_screenshot;
-#[cfg(target_os = "windows")]
 mod windows_permissions;
+#[cfg(target_os = "windows")]
+mod windows_screenshot;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -538,8 +538,8 @@ fn notify_frontend_ready(app_handle: tauri::AppHandle, db: tauri::State<history:
         #[cfg(target_os = "windows")]
         {
             if let Ok(conn) = db.0.lock() {
-                let stage = onboarding::get_stage(&conn)
-                    .unwrap_or(onboarding::OnboardingStage::Intro);
+                let stage =
+                    onboarding::get_stage(&conn).unwrap_or(onboarding::OnboardingStage::Intro);
 
                 // On Windows, there are no Accessibility or Screen Recording
                 // permission gates. Skip the permissions stage entirely and

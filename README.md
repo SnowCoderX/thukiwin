@@ -61,6 +61,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Screen capture:** type `/screen` to instantly capture your entire screen and attach it to your question as context
 - **Slash commands:** built-in prompt shortcuts for common tasks: `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`. Highlight text anywhere, summon ThukiWin, type a command, and hit Enter
 - **Extended reasoning:** type `/think` to have the model reason through a problem step by step before answering
+- **Read Aloud (TTS):** click the speaker button on any message to have it read aloud using Microsoft Edge TTS voices (Windows-only; not available in the macOS version of Thuki)
 - **Privacy-first:** zero-trust architecture, all data stays on your device
 
 ## Requirements
@@ -168,6 +169,12 @@ When you double-tap <kbd>Ctrl</kbd> with text selected, ThukiWin uses clipboard 
 
 Windows does not have macOS-style Accessibility or Screen Recording permission gates. ThukiWin works without any special permission setup. The onboarding flow on Windows skips the permission step and goes directly to the intro.
 
+### Read Aloud (TTS)
+
+ThukiWin includes a built-in text-to-speech feature using Microsoft Edge TTS voices. Click the speaker icon on any chat message to hear it read aloud. You can choose from hundreds of voices in dozens of languages via the voice selector dropdown.
+
+> **Privacy note:** The TTS feature sends the text of the selected message to Microsoft's Edge TTS service over the internet. A one-time disclosure is shown on first use. This feature is Windows-only and is not available in the macOS version of Thuki.
+
 ## Architecture & Security
 
 <details>
@@ -186,7 +193,7 @@ ThukiWin is a **Tauri v2** app (Rust backend + React/TypeScript frontend) that i
 
 1. **Frontend (Tauri/React):** Operates within a secure system webview (WebView2 on Windows) with restricted IPC. Streaming uses Tauri's Channel API; the Rust backend sends typed `StreamChunk` enum variants, and the frontend hook accumulates tokens into React state.
 
-2. **No network egress:** ThukiWin only communicates with the local Ollama instance at `127.0.0.1:11434`. No data is sent to any external server.
+2. **Minimal network egress:** ThukiWin only communicates with the local Ollama instance at `127.0.0.1:11434`. The only exception is the Read Aloud (TTS) feature, which sends the selected text to Microsoft's Edge TTS service over the internet. All other features are fully offline.
 
 3. **Local storage only:** All conversations are stored in a local SQLite database in the app data directory.
 
