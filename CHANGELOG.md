@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/ayzekhdawy/thukiwin/compare/v0.7.0...v0.8.0) (2026-04-17)
+
+
+### Features
+
+* add keyboard shortcuts and fix VoiceSelector Escape bug ([704012b](https://github.com/ayzekhdawy/thukiwin/commit/704012b7c10c1f413644f4bfb7bdb91d1a08cb3a))
+
 ## [0.7.0](https://github.com/ayzekhdawy/thukiwin/compare/v0.6.1...v0.7.0) (2026-04-17)
 
 
