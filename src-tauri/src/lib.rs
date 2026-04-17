@@ -398,6 +398,8 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
     };
 
     if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_skip_taskbar(true);
         let _ = window.show();
         let _ = window.set_focus();
     }

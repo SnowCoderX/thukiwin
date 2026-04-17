@@ -168,6 +168,14 @@ unsafe extern "system" fn keyboard_hook_callback(
 
     let kb_struct = unsafe { &*(l_param.0 as *const KBDLLHOOKSTRUCT) };
 
+    // Ignore synthetic key events (e.g. from SendInput in clipboard_fallback)
+    // to prevent simulated Ctrl presses from interfering with activation detection.
+    // LLKHF_INJECTED = 0x0010 — set for events injected by SendInput or similar.
+    let injected = kb_struct.flags.0 & 0x10 != 0;
+    if injected {
+        return unsafe { CallNextHookEx(None, code, w_param, l_param) };
+    }
+
     let wparam_val = w_param.0 as u32;
     let is_press = wparam_val == 0x0100 || wparam_val == 0x0104;
 

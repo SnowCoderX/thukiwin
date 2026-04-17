@@ -815,17 +815,18 @@ function App() {
     /* v8 ignore start -- defensive guard: button is always disabled at max images, so this branch is unreachable through normal UI interaction */
     if (attachedImages.length >= MAX_IMAGES) return;
     /* v8 ignore stop */
-    const base64 = await invoke<string | null>('capture_screenshot_command');
-    if (!base64) return;
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    const blob = new Blob([bytes], { type: 'image/png' });
-    const file = new File([blob], 'screenshot.png', { type: 'image/png' });
-    handleImagesAttached([file]);
-  }, [attachedImages, handleImagesAttached]);
+    const filePath = await invoke<string>('capture_full_screen_command');
+    if (!filePath) return;
+    const assetUrl = convertFileSrc(filePath);
+    setAttachedImages((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        blobUrl: assetUrl,
+        filePath,
+      },
+    ]);
+  }, [attachedImages]);
 
   /** Removes an attached image from state, revokes the blob URL, and
    *  deletes the staged file from disk if processing completed. */
@@ -1274,14 +1275,18 @@ function App() {
   }, [replayEntranceAnimation, requestHideOverlay]);
 
   /**
-   * Combined close handler shared by the keyboard shortcut (Esc/Cmd+W)
-   * and the traffic light close/minimize buttons. Notifies the Rust
+   * Combined close handler shared by the keyboard shortcut (Esc/Ctrl+W)
+   * and the window control close button. Notifies the Rust
    * backend and triggers the frontend exit animation sequence.
    */
   const handleCloseOverlay = useCallback(() => {
     void invoke('notify_overlay_hidden');
     requestHideOverlay();
   }, [requestHideOverlay]);
+
+  const handleMinimize = useCallback(() => {
+    void getCurrentWindow().minimize();
+  }, []);
 
   /** Hide window on Escape or Cmd+W (macOS) / Ctrl+W. */
   useEffect(() => {
@@ -1406,7 +1411,7 @@ function App() {
             initial={{ opacity: 0, y: -20, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -16, scale: 0.98 }}
-            transition={{ type: 'spring', stiffness: 260, damping: 24 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 28 }}
             className="w-full max-w-2xl px-4 py-2 overflow-visible"
           >
             {/* Relative wrapper — serves as the positioning context for the
@@ -1426,10 +1431,8 @@ function App() {
                   transition:
                     'height 0.25s cubic-bezier(0.16, 1, 0.3, 1), min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
                 }}
-                className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl border border-surface-border max-h-[600px] overflow-hidden ${
-                  isChatMode
-                    ? `rounded-lg shadow-chat`
-                    : 'rounded-2xl shadow-bar'
+                className={`morphing-container relative flex flex-col bg-surface-base backdrop-blur-2xl max-h-[600px] overflow-hidden rounded-lg ${
+                  isChatMode ? 'shadow-chat' : 'shadow-bar'
                 }`}
               >
                 {/* Chat Messages Area — morphs in when in chat mode */}
@@ -1443,6 +1446,7 @@ function App() {
                       }
                       isGenerating={isGenerating || isSubmitPending}
                       onClose={handleCloseOverlay}
+                      onMinimize={handleMinimize}
                       onSave={handleSave}
                       isSaved={isSaved}
                       canSave={canSave}
@@ -1547,7 +1551,7 @@ function App() {
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: -8, scale: 0.97 }}
                     transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-                    className="history-dropdown absolute right-3 top-10 z-50 w-56 rounded-xl border border-surface-border bg-surface-base shadow-chat overflow-hidden flex flex-col"
+                    className="history-dropdown absolute left-2 top-10 z-50 w-56 rounded-lg border border-surface-border bg-surface-base shadow-chat overflow-hidden flex flex-col"
                   >
                     <HistoryPanel
                       listConversations={listConversations}

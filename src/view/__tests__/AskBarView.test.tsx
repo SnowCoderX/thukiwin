@@ -154,7 +154,7 @@ describe('AskBarView', () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
-  it('shows logo at 40px in input bar mode (w-10 h-10 rounded-xl classes)', () => {
+  it('shows logo at 40px in input bar mode (w-10 h-10 rounded-lg classes)', () => {
     const { container } = render(
       <AskBarView
         {...IMAGE_DEFAULTS}
@@ -171,7 +171,7 @@ describe('AskBarView', () => {
     expect(logo).not.toBeNull();
     expect(logo?.classList.contains('w-10')).toBe(true);
     expect(logo?.classList.contains('h-10')).toBe(true);
-    expect(logo?.classList.contains('rounded-xl')).toBe(true);
+    expect(logo?.classList.contains('rounded-lg')).toBe(true);
   });
 
   it('shows logo at 24px in chat mode (w-6 h-6 rounded-lg classes)', () => {

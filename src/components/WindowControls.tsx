@@ -1,10 +1,9 @@
 /**
  * Window controls bar for the overlay.
  *
- * Renders a thin header bar with a close button on the left.
- * The close button is a red dot that reveals an × icon on hover.
- * Two decorative dots (minimize, zoom) are shown but inactive since
- * panel windows do not support minimize or fullscreen.
+ * Renders a thin header bar with functional buttons on the left
+ * (save, new conversation, history) and Windows-style window controls
+ * on the right (minimize, maximize, close).
  *
  * Window dragging is handled by the application root container via event
  * bubbling — mousedown events from the bar surface propagate up naturally.
@@ -87,6 +86,8 @@ const HISTORY_ICON = (
 interface WindowControlsProps {
   /** Triggers the overlay hide animation sequence. */
   onClose: () => void;
+  /** Minimizes the window. */
+  onMinimize: () => void;
   /**
    * Called when the user clicks the bookmark (save) icon.
    * Omit to hide the save button entirely.
@@ -114,67 +115,22 @@ interface WindowControlsProps {
   onNewConversation?: () => void;
 }
 
-/** Decorative dot color for inactive buttons. */
-const INACTIVE_DOT = 'rgba(255, 255, 255, 0.12)';
-
 export const WindowControls = memo(function WindowControls({
   onClose,
+  onMinimize,
   onSave,
   isSaved = false,
   canSave = false,
   onHistoryOpen,
   onNewConversation,
 }: WindowControlsProps) {
-  // Disabled only when there is nothing to save yet and the conversation hasn't
-  // been saved. Once saved the button stays active so the user can unsave.
   const saveDisabled = !isSaved && !canSave;
 
   return (
     <div className="shrink-0">
-      <div className="group flex items-center px-4 py-2.5">
-        {/* Close button — reveals × icon on group hover.
-            Padding enlarges the hit area to ~24×24px without changing the
-            12×12px visual dot; negative margin preserves flex spacing. */}
-        <button
-          type="button"
-          onClick={onClose}
-          className="group/close-btn p-1.5 -m-1.5 flex items-center justify-center rounded-full cursor-pointer"
-          aria-label="Close window"
-        >
-          <div className="w-3 h-3 rounded-full bg-[#FF5F57] flex items-center justify-center transition-transform duration-150 group-hover/close-btn:scale-125 group-active/close-btn:scale-90">
-            <svg
-              width="6"
-              height="6"
-              viewBox="0 0 6 6"
-              className="opacity-0 group-hover:opacity-100 transition-opacity duration-150"
-              aria-hidden="true"
-            >
-              <path
-                d="M0.5 0.5L5.5 5.5M5.5 0.5L0.5 5.5"
-                stroke="rgba(0,0,0,0.6)"
-                strokeWidth="1.2"
-                strokeLinecap="round"
-              />
-            </svg>
-          </div>
-        </button>
-
-        {/* Minimize — decorative only */}
-        <div
-          className="w-3 h-3 rounded-full ml-2"
-          style={{ backgroundColor: INACTIVE_DOT }}
-          aria-hidden="true"
-        />
-
-        {/* Zoom — decorative only */}
-        <div
-          className="w-3 h-3 rounded-full ml-2"
-          style={{ backgroundColor: INACTIVE_DOT }}
-          aria-hidden="true"
-        />
-
-        {/* Right-side header controls — save bookmark + history dropdown */}
-        <div className="ml-auto flex items-center gap-1">
+      <div className="flex items-center h-8 px-2">
+        {/* Left side: functional buttons */}
+        <div className="flex items-center gap-1">
           {onSave !== undefined && (
             <Tooltip
               label={isSaved ? 'Remove from history' : 'Save conversation'}
@@ -226,6 +182,34 @@ export const WindowControls = memo(function WindowControls({
               </button>
             </Tooltip>
           )}
+        </div>
+
+        {/* Right side: Windows window controls */}
+        <div className="ml-auto flex items-center">
+          <button
+            type="button"
+            onClick={onMinimize}
+            className="win-title-btn win-title-btn-minimize"
+            aria-label="Minimize"
+          >
+            <svg width="10" height="1" viewBox="0 0 10 1">
+              <path d="M0 0.5h10" stroke="currentColor" strokeWidth="1" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="win-title-btn win-title-btn-close"
+            aria-label="Close window"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <path
+                d="M0 0L10 10M10 0L0 10"
+                stroke="currentColor"
+                strokeWidth="1.2"
+              />
+            </svg>
+          </button>
         </div>
       </div>
 

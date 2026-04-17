@@ -18,6 +18,8 @@ interface ConversationViewProps {
   isGenerating: boolean;
   /** Callback fired when the user requests to close the overlay. */
   onClose: () => void;
+  /** Minimizes the window. */
+  onMinimize: () => void;
   /**
    * Called when the bookmark icon is clicked to persist the conversation.
    * Omit to hide the save button.
@@ -77,6 +79,7 @@ export function ConversationView({
   messages,
   isGenerating,
   onClose,
+  onMinimize,
   onSave,
   isSaved,
   canSave,
@@ -186,6 +189,7 @@ export function ConversationView({
     >
       <WindowControls
         onClose={onClose}
+        onMinimize={onMinimize}
         onSave={onSave}
         isSaved={isSaved}
         canSave={canSave}

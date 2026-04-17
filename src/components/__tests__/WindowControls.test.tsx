@@ -5,35 +5,40 @@ import { WindowControls } from '../WindowControls';
 describe('WindowControls', () => {
   it('close button calls onClose when clicked', () => {
     const onClose = vi.fn();
-    render(<WindowControls onClose={onClose} />);
+    render(<WindowControls onClose={onClose} onMinimize={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Close window' }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('close button has correct styling (bg-[#FF5F57])', () => {
-    const { container } = render(<WindowControls onClose={vi.fn()} />);
-    const closeDot = container.querySelector('.bg-\\[\\#FF5F57\\]');
-    expect(closeDot).not.toBeNull();
+  it('close button has Windows close styling', () => {
+    render(<WindowControls onClose={vi.fn()} onMinimize={vi.fn()} />);
+    const closeBtn = screen.getByRole('button', { name: 'Close window' });
+    expect(closeBtn).toHaveClass('win-title-btn-close');
   });
 
-  it('renders decorative minimize and zoom dots (aria-hidden elements)', () => {
-    const { container } = render(<WindowControls onClose={vi.fn()} />);
-    const hiddenDots = container.querySelectorAll('[aria-hidden="true"]');
-    // The two decorative divs (minimize + zoom) plus SVG inside close button = 3
-    // but we only care that at least 2 non-button aria-hidden elements exist
-    const decorativeDivs = Array.from(hiddenDots).filter(
-      (el) => el.tagName.toLowerCase() === 'div',
-    );
-    expect(decorativeDivs).toHaveLength(2);
+  it('renders minimize button', () => {
+    render(<WindowControls onClose={vi.fn()} onMinimize={vi.fn()} />);
+    expect(
+      screen.getByRole('button', { name: 'Minimize' }),
+    ).toBeInTheDocument();
+  });
+
+  it('minimize button calls onMinimize when clicked', () => {
+    const onMinimize = vi.fn();
+    render(<WindowControls onClose={vi.fn()} onMinimize={onMinimize} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Minimize' }));
+    expect(onMinimize).toHaveBeenCalledTimes(1);
   });
 
   it('renders divider separator (bg-surface-border)', () => {
-    const { container } = render(<WindowControls onClose={vi.fn()} />);
+    const { container } = render(
+      <WindowControls onClose={vi.fn()} onMinimize={vi.fn()} />,
+    );
     expect(container.querySelector('.bg-surface-border')).not.toBeNull();
   });
 
   it('close button has x icon svg', () => {
-    render(<WindowControls onClose={vi.fn()} />);
+    render(<WindowControls onClose={vi.fn()} onMinimize={vi.fn()} />);
     const closeBtn = screen.getByRole('button', { name: 'Close window' });
     const svg = closeBtn.querySelector('svg');
     expect(svg).not.toBeNull();
@@ -43,6 +48,7 @@ describe('WindowControls', () => {
     render(
       <WindowControls
         onClose={vi.fn()}
+        onMinimize={vi.fn()}
         onSave={vi.fn()}
         canSave
         isSaved={false}
@@ -55,7 +61,13 @@ describe('WindowControls', () => {
 
   it('save button shows "Remove from history" aria-label when saved', () => {
     render(
-      <WindowControls onClose={vi.fn()} onSave={vi.fn()} canSave isSaved />,
+      <WindowControls
+        onClose={vi.fn()}
+        onMinimize={vi.fn()}
+        onSave={vi.fn()}
+        canSave
+        isSaved
+      />,
     );
     expect(
       screen.getByRole('button', { name: 'Remove from history' }),
@@ -65,7 +77,13 @@ describe('WindowControls', () => {
   it('save button calls onSave when clicked while saved', () => {
     const onSave = vi.fn();
     render(
-      <WindowControls onClose={vi.fn()} onSave={onSave} canSave isSaved />,
+      <WindowControls
+        onClose={vi.fn()}
+        onMinimize={vi.fn()}
+        onSave={onSave}
+        canSave
+        isSaved
+      />,
     );
     fireEvent.click(
       screen.getByRole('button', { name: 'Remove from history' }),

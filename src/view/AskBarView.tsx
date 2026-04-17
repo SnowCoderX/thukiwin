@@ -585,7 +585,7 @@ export function AskBarView({
             src="/thuki-logo.png"
             alt="Thuki"
             className={`shrink-0 transition-all duration-300 ease-out ${
-              isChatMode ? 'w-6 h-6 rounded-lg' : 'w-10 h-10 rounded-xl'
+              isChatMode ? 'w-6 h-6 rounded-lg' : 'w-10 h-10 rounded-lg'
             }`}
             draggable={false}
           />
@@ -661,7 +661,7 @@ export function AskBarView({
             disabled={!canSubmit && !isBusy}
             whileHover={canSubmit || isBusy ? { scale: 1.08 } : undefined}
             whileTap={canSubmit || isBusy ? { scale: 0.92 } : undefined}
-            className={`shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors duration-200 ${
+            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-200 ${
               isBusy
                 ? 'stop-btn-ring bg-red-500/10 text-red-400 cursor-pointer'
                 : canSubmit

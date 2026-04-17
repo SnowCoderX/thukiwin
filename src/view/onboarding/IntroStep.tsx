@@ -33,9 +33,9 @@ export function IntroStep({ onComplete }: Props) {
         style={{
           width: 420,
           background:
-            'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.14) 0%, rgba(28,24,20,0.97) 60%), rgba(28,24,20,0.97)',
-          border: '1px solid rgba(255, 141, 92, 0.2)',
-          borderRadius: 24,
+            'radial-gradient(ellipse 80% 55% at 50% 0%, rgba(255,141,92,0.10) 0%, rgba(32,32,32,0.97) 60%), rgba(32,32,32,0.97)',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+          borderRadius: 8,
           padding: '32px 26px 26px',
           boxShadow: '0 0 40px rgba(255,100,40,0.07)',
           position: 'relative',
@@ -153,7 +153,7 @@ export function IntroStep({ onComplete }: Props) {
             fontSize: 14,
             fontWeight: 600,
             border: 'none',
-            borderRadius: 12,
+            borderRadius: 8,
             cursor: 'pointer',
             letterSpacing: '-0.1px',
             boxShadow: '0 4px 20px rgba(255,100,40,0.28)',

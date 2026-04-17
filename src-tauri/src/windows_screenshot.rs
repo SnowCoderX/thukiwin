@@ -2,10 +2,9 @@
 
 use tauri::Manager;
 
-use windows::core::PCWSTR;
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDCW, DeleteDC, DeleteObject,
-    GetBitmapBits, SelectObject, SRCCOPY,
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetBitmapBits,
+    GetDC, ReleaseDC, SelectObject, SRCCOPY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
@@ -23,18 +22,13 @@ pub fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
         let width = screen_width as u32;
         let height = screen_height as u32;
 
-        let screen_dc = CreateDCW(
-            PCWSTR::null(),
-            windows::core::w!("DISPLAY"),
-            PCWSTR::null(),
-            None,
-        );
+        let screen_dc = GetDC(None);
 
         let mem_dc = CreateCompatibleDC(Some(screen_dc));
         let bitmap = CreateCompatibleBitmap(screen_dc, screen_width, screen_height);
         let _old_bitmap = SelectObject(mem_dc, bitmap.into());
 
-        let _ = BitBlt(
+        BitBlt(
             mem_dc,
             0,
             0,
@@ -44,7 +38,12 @@ pub fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
             0,
             0,
             SRCCOPY,
-        );
+        )
+        .map_err(|e| format!("BitBlt failed: {e}"))?;
+
+        // Deselect bitmap from DC before reading — GetBitmapBits must not
+        // be called on a bitmap currently selected into a device context.
+        SelectObject(mem_dc, _old_bitmap);
 
         let row_size = width * 4;
         let pixel_size = (row_size * height) as usize;
@@ -56,10 +55,9 @@ pub fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
             pixels.as_mut_ptr() as *mut core::ffi::c_void,
         );
 
-        SelectObject(mem_dc, _old_bitmap);
         let _ = DeleteObject(bitmap.into());
         let _ = DeleteDC(mem_dc);
-        let _ = DeleteDC(screen_dc);
+        let _ = ReleaseDC(None, screen_dc);
 
         if bits_copied == 0 {
             return Err("GetBitmapBits returned 0 bytes".to_string());

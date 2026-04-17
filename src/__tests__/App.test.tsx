@@ -2728,8 +2728,10 @@ describe('App', () => {
   // ─── Screenshot integration ────────────────────────────────────────────────
 
   describe('screenshot integration', () => {
-    it('clicking screenshot button invokes capture_screenshot', async () => {
-      enableChannelCaptureWithResponses({ capture_screenshot_command: null });
+    it('clicking screenshot button invokes capture_full_screen_command', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '/tmp/screenshot.jpg',
+      });
 
       render(<App />);
       await act(async () => {});
@@ -2743,13 +2745,15 @@ describe('App', () => {
 
       await act(async () => {
         await vi.waitFor(() => {
-          expect(invoke).toHaveBeenCalledWith('capture_screenshot_command');
+          expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
         });
       });
     });
 
-    it('does nothing when capture_screenshot returns null (cancelled)', async () => {
-      enableChannelCaptureWithResponses({ capture_screenshot_command: null });
+    it('does nothing when capture_full_screen_command returns empty string', async () => {
+      enableChannelCaptureWithResponses({
+        capture_full_screen_command: '',
+      });
 
       render(<App />);
       await act(async () => {});
@@ -2763,21 +2767,15 @@ describe('App', () => {
 
       await act(async () => {
         await vi.waitFor(() => {
-          expect(invoke).toHaveBeenCalledWith('capture_screenshot_command');
+          expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
         });
       });
-
-      // save_image_command must NOT have been called
-      const saveCalls = invoke.mock.calls.filter(
-        ([cmd]) => cmd === 'save_image_command',
-      );
-      expect(saveCalls).toHaveLength(0);
     });
 
-    it('does not invoke capture_screenshot_command when at max images', async () => {
+    it('does not invoke capture_full_screen_command when at max images', async () => {
       enableChannelCaptureWithResponses({
         save_image_command: '/tmp/staged/img.jpg',
-        capture_screenshot_command: null,
+        capture_full_screen_command: '/tmp/screenshot.jpg',
       });
 
       render(<App />);
@@ -2807,14 +2805,12 @@ describe('App', () => {
       fireEvent.click(btn);
       await act(async () => {});
 
-      expect(invoke).not.toHaveBeenCalledWith('capture_screenshot_command');
+      expect(invoke).not.toHaveBeenCalledWith('capture_full_screen_command');
     });
 
-    it('attaches screenshot image when capture_screenshot returns base64', async () => {
-      const fakeBase64 = btoa('fake screenshot bytes');
+    it('adds screenshot image to attached images when capture succeeds', async () => {
       enableChannelCaptureWithResponses({
-        capture_screenshot_command: fakeBase64,
-        save_image_command: '/tmp/screenshot.jpg',
+        capture_full_screen_command: '/tmp/screenshot.jpg',
       });
 
       render(<App />);
@@ -2827,13 +2823,9 @@ describe('App', () => {
         );
       });
 
-      // Wait for invoke(capture_screenshot) → FileReader → invoke(save_image_command)
       await act(async () => {
         await vi.waitFor(() => {
-          expect(invoke).toHaveBeenCalledWith(
-            'save_image_command',
-            expect.objectContaining({ imageDataBase64: expect.any(String) }),
-          );
+          expect(invoke).toHaveBeenCalledWith('capture_full_screen_command');
         });
       });
     });
