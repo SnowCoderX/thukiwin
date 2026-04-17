@@ -28,6 +28,14 @@
 
 ---
 
+<p align="center">
+  <img src="public/demo.gif" alt="ThukiWin demo — double-tap Ctrl to summon, ask, dismiss" width="560" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/ayzekhdawy/thukiwin/releases/download/untagged-fb9e77c48260eb00efb2/ThukiWin-demo.mp4">Watch the full demo video</a>
+</p>
+
 **No API keys. No subscriptions. No cloud. No telemetry. Free forever.**
 
 ThukiWin is a lightweight Windows overlay powered by local AI models running entirely on your own machine, built for quick, uninterrupted asks without ever leaving what you're doing.
