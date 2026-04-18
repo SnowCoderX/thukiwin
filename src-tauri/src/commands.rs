@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -147,6 +148,18 @@ struct OllamaChatResponse {
     done: Option<bool>,
 }
 
+/// Single model entry returned by Ollama `/api/tags`.
+#[derive(Deserialize)]
+struct OllamaTagModel {
+    name: String,
+}
+
+/// Response payload from Ollama `/api/tags`.
+#[derive(Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaTagModel>,
+}
+
 /// Holds the active cancellation token for the current generation request.
 ///
 /// Only one generation runs at a time — starting a new request replaces the
@@ -229,8 +242,25 @@ pub fn load_system_prompt() -> String {
 /// environment variable (comma-separated list). The first entry is the active model
 /// used for inference. Falls back to `DEFAULT_MODEL_NAME` when unset or empty.
 pub struct ModelConfig {
-    pub active: String,
-    pub all: Vec<String>,
+    active: Mutex<String>,
+    configured: Vec<String>,
+}
+
+impl ModelConfig {
+    /// Returns the currently active model name.
+    pub fn active(&self) -> String {
+        self.active.lock().unwrap().clone()
+    }
+
+    /// Replaces the currently active model name.
+    pub fn set_active(&self, model: String) {
+        *self.active.lock().unwrap() = model;
+    }
+
+    /// Returns the configured model preference list from env/build config.
+    pub fn configured(&self) -> &[String] {
+        &self.configured
+    }
 }
 
 /// Reads `THUKI_SUPPORTED_AI_MODELS` from the environment and returns a
@@ -252,16 +282,91 @@ pub fn load_model_config() -> ModelConfig {
         .cloned()
         .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
     ModelConfig {
-        active,
-        all: models,
+        active: Mutex::new(active),
+        configured: models,
     }
 }
 
-/// Returns the active model and full supported list to the frontend.
+fn push_unique_model(models: &mut Vec<String>, seen: &mut HashSet<String>, model: &str) {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if seen.insert(trimmed.to_string()) {
+        models.push(trimmed.to_string());
+    }
+}
+
+/// Merges env-configured models with models discovered from the local Ollama daemon.
+/// Keeps configured order stable, then appends any extra discovered models.
+fn merge_model_lists(configured: &[String], discovered: &[String], active: &str) -> Vec<String> {
+    let mut merged = Vec::new();
+    let mut seen = HashSet::new();
+
+    push_unique_model(&mut merged, &mut seen, active);
+
+    for model in configured {
+        push_unique_model(&mut merged, &mut seen, model);
+    }
+
+    for model in discovered {
+        push_unique_model(&mut merged, &mut seen, model);
+    }
+
+    if merged.is_empty() {
+        merged.push(DEFAULT_MODEL_NAME.to_string());
+    }
+
+    merged
+}
+
+/// Queries Ollama for the locally pulled model list via `/api/tags`.
+async fn fetch_ollama_models(client: &reqwest::Client) -> Vec<String> {
+    let endpoint = format!("{}/api/tags", DEFAULT_OLLAMA_URL.trim_end_matches('/'));
+    let Ok(response) = client.get(endpoint).send().await else {
+        return Vec::new();
+    };
+    let Ok(payload) = response.json::<OllamaTagsResponse>().await else {
+        return Vec::new();
+    };
+
+    payload.models.into_iter().map(|m| m.name).collect()
+}
+
+/// Returns the active model and full discovered/configured list to the frontend.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub fn get_model_config(model_config: tauri::State<'_, ModelConfig>) -> serde_json::Value {
-    serde_json::json!({ "active": model_config.active, "all": model_config.all })
+pub async fn get_model_config(
+    client: State<'_, OllamaHttpClient>,
+    model_config: tauri::State<'_, ModelConfig>,
+) -> Result<serde_json::Value, String> {
+    let client = client.0.clone();
+    let active = model_config.active();
+    let configured = model_config.configured().to_vec();
+    let discovered = fetch_ollama_models(&client).await;
+    let all = merge_model_lists(&configured, &discovered, &active);
+    Ok(serde_json::json!({ "active": active, "all": all }))
+}
+
+/// Updates the active model used for future Ollama requests.
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn set_active_model(
+    model: String,
+    client: State<'_, OllamaHttpClient>,
+    model_config: tauri::State<'_, ModelConfig>,
+) -> Result<serde_json::Value, String> {
+    let client = client.0.clone();
+    let normalized = model.trim();
+    if normalized.is_empty() {
+        return Err("model cannot be empty".to_string());
+    }
+
+    model_config.set_active(normalized.to_string());
+    let configured = model_config.configured().to_vec();
+    let discovered = fetch_ollama_models(&client).await;
+    let all = merge_model_lists(&configured, &discovered, normalized);
+    Ok(serde_json::json!({ "active": normalized, "all": all }))
 }
 
 /// Core streaming logic for Ollama `/api/chat`, separated from the Tauri
@@ -393,6 +498,7 @@ pub async fn ask_ollama(
     model_config: State<'_, ModelConfig>,
 ) -> Result<(), String> {
     let endpoint = format!("{}/api/chat", DEFAULT_OLLAMA_URL.trim_end_matches('/'));
+    let active_model = model_config.active();
     let cancel_token = CancellationToken::new();
     generation.set(cancel_token.clone());
 
@@ -439,7 +545,7 @@ pub async fn ask_ollama(
 
     let accumulated = stream_ollama_chat(
         &endpoint,
-        &model_config.active,
+        &active_model,
         messages,
         think,
         &client.0,
@@ -1114,8 +1220,8 @@ mod tests {
             .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
 
         ModelConfig {
-            active,
-            all: models,
+            active: Mutex::new(active),
+            configured: models,
         }
     }
 
@@ -1134,8 +1240,8 @@ mod tests {
         std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
         let config = load_model_config();
         let expected = expected_default_model_config();
-        assert_eq!(config.active, expected.active);
-        assert_eq!(config.all, expected.all);
+        assert_eq!(config.active(), expected.active());
+        assert_eq!(config.configured(), expected.configured());
     }
 
     #[test]
@@ -1143,8 +1249,8 @@ mod tests {
         let _guard = env_guard();
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e4b");
         let config = load_model_config();
-        assert_eq!(config.active, "gemma4:e4b");
-        assert_eq!(config.all, vec!["gemma4:e4b".to_string()]);
+        assert_eq!(config.active(), "gemma4:e4b");
+        assert_eq!(config.configured(), ["gemma4:e4b".to_string()]);
         std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
     }
 
@@ -1153,10 +1259,10 @@ mod tests {
         let _guard = env_guard();
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e2b,gemma4:e4b");
         let config = load_model_config();
-        assert_eq!(config.active, "gemma4:e2b");
+        assert_eq!(config.active(), "gemma4:e2b");
         assert_eq!(
-            config.all,
-            vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
+            config.configured(),
+            ["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
         );
         std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
     }
@@ -1166,10 +1272,10 @@ mod tests {
         let _guard = env_guard();
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", " gemma4:e2b , gemma4:e4b ");
         let config = load_model_config();
-        assert_eq!(config.active, "gemma4:e2b");
+        assert_eq!(config.active(), "gemma4:e2b");
         assert_eq!(
-            config.all,
-            vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
+            config.configured(),
+            ["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
         );
         std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
     }
@@ -1179,8 +1285,8 @@ mod tests {
         let _guard = env_guard();
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "   ");
         let config = load_model_config();
-        assert_eq!(config.active, DEFAULT_MODEL_NAME);
-        assert_eq!(config.all, vec![DEFAULT_MODEL_NAME.to_string()]);
+        assert_eq!(config.active(), DEFAULT_MODEL_NAME);
+        assert_eq!(config.configured(), [DEFAULT_MODEL_NAME.to_string()]);
         std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
     }
 
@@ -1190,8 +1296,8 @@ mod tests {
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e2b,,gemma4:e4b");
         let config = load_model_config();
         assert_eq!(
-            config.all,
-            vec!["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
+            config.configured(),
+            ["gemma4:e2b".to_string(), "gemma4:e4b".to_string()]
         );
         std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
     }
@@ -1203,9 +1309,32 @@ mod tests {
         // The active model must still fall back to DEFAULT_MODEL_NAME.
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", ",");
         let config = load_model_config();
-        assert_eq!(config.active, DEFAULT_MODEL_NAME);
-        assert_eq!(config.all, Vec::<String>::new());
+        assert_eq!(config.active(), DEFAULT_MODEL_NAME);
+        assert_eq!(config.configured(), &[] as &[String]);
         std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
+    }
+
+    #[test]
+    fn merge_model_lists_keeps_active_then_configured_then_discovered() {
+        let merged = merge_model_lists(
+            &["gemma4:e2b".to_string(), "gemma3:27b".to_string()],
+            &[
+                "gemma3:27b".to_string(),
+                "llama3.2".to_string(),
+                "gemma4:e2b".to_string(),
+            ],
+            "qwen3",
+        );
+
+        assert_eq!(
+            merged,
+            vec![
+                "qwen3".to_string(),
+                "gemma4:e2b".to_string(),
+                "gemma3:27b".to_string(),
+                "llama3.2".to_string()
+            ]
+        );
     }
 
     // ── sampling options test ────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
+import { ModelSelector } from '../components/ModelSelector';
 import { Tooltip } from '../components/Tooltip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
@@ -231,6 +232,12 @@ interface AskBarViewProps {
   onImagePreview: (id: string) => void;
   /** Called when the user clicks the screenshot capture button. */
   onScreenshot: () => void;
+  /** All available Ollama model names for the model picker. */
+  availableModels: string[];
+  /** Currently active model name. */
+  activeModel: string;
+  /** Called when the user selects a different model. */
+  onModelChange: (model: string) => void;
   /**
    * Drag state passed down from the root window handler.
    * "normal" = violet ring; "max" = red ring + label; undefined = no ring.
@@ -260,6 +267,9 @@ export function AskBarView({
   onImageRemove,
   onImagePreview,
   onScreenshot,
+  availableModels,
+  activeModel,
+  onModelChange,
   isDragOver,
 }: AskBarViewProps) {
   /** Ref to the mirror div behind the textarea for command highlighting. */
@@ -603,11 +613,19 @@ export function AskBarView({
             </button>
           )}
 
+          <ModelSelector
+            models={availableModels}
+            activeModel={activeModel}
+            onModelChange={onModelChange}
+            disabled={isBusy}
+          />
+
           <div className="relative flex-1 min-w-0">
             {/* Mirror div: renders the same text with highlighted commands.
                 Sits behind the transparent textarea so colored spans show through. */}
             <div
               ref={mirrorRef}
+              data-testid="askbar-mirror"
               aria-hidden="true"
               className="absolute inset-0 pointer-events-none bg-transparent text-text-primary text-sm py-2 px-1 leading-relaxed whitespace-pre-wrap break-words overflow-hidden"
             >

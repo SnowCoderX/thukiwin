@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AskBarView } from '../AskBarView';
 import type { AttachedImage } from '../../types/image';
@@ -25,6 +25,9 @@ const IMAGE_DEFAULTS = {
   onImageRemove: vi.fn(),
   onImagePreview: vi.fn(),
   onScreenshot: vi.fn(),
+  availableModels: ['gemma4:e2b', 'llama3.2'],
+  activeModel: 'gemma4:e2b',
+  onModelChange: vi.fn(),
 };
 
 describe('AskBarView', () => {
@@ -43,6 +46,49 @@ describe('AskBarView', () => {
     );
     const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
     expect(textarea).not.toBeNull();
+  });
+
+  it('renders model selector with active model', () => {
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+      />,
+    );
+
+    expect(screen.getByRole('combobox', { name: /select model/i })).toHaveValue(
+      'gemma4:e2b',
+    );
+  });
+
+  it('calls onModelChange when a different model is selected', () => {
+    const onModelChange = vi.fn();
+
+    render(
+      <AskBarView
+        {...IMAGE_DEFAULTS}
+        onModelChange={onModelChange}
+        query=""
+        setQuery={vi.fn()}
+        isChatMode={false}
+        isGenerating={false}
+        onSubmit={vi.fn()}
+        onCancel={vi.fn()}
+        inputRef={makeRef()}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole('combobox', { name: /select model/i }), {
+      target: { value: 'llama3.2' },
+    });
+
+    expect(onModelChange).toHaveBeenCalledWith('llama3.2');
   });
 
   it('renders textarea with chat mode placeholder', () => {
@@ -1297,7 +1343,9 @@ describe('AskBarView', () => {
       // Initially row 0 is highlighted (only one command, so index stays 0)
       fireEvent.keyDown(textarea, { key: 'ArrowDown' });
       // ArrowDown from index 0 moves to index 1
-      const options = screen.getAllByRole('option');
+      const options = within(
+        screen.getByRole('listbox', { name: /command suggestions/i }),
+      ).getAllByRole('option');
       expect(options[1]).toHaveAttribute('aria-selected', 'true');
     });
 
@@ -1317,7 +1365,9 @@ describe('AskBarView', () => {
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
       fireEvent.keyDown(textarea, { key: 'ArrowUp' });
       // ArrowUp wraps to the last option
-      const options = screen.getAllByRole('option');
+      const options = within(
+        screen.getByRole('listbox', { name: /command suggestions/i }),
+      ).getAllByRole('option');
       const lastOption = options[options.length - 1];
       expect(lastOption).toHaveAttribute('aria-selected', 'true');
     });
@@ -1336,7 +1386,9 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const options = screen.getAllByRole('option');
+      const options = within(
+        screen.getByRole('listbox', { name: /command suggestions/i }),
+      ).getAllByRole('option');
       fireEvent.mouseDown(options[0]);
       expect(setQuery).toHaveBeenCalledWith('/screen ');
     });
@@ -1448,7 +1500,7 @@ describe('AskBarView', () => {
 
   describe('Command highlighting mirror div', () => {
     it('renders a mirror div with aria-hidden behind the textarea', () => {
-      const { container } = render(
+      render(
         <AskBarView
           {...IMAGE_DEFAULTS}
           query="/screen explain"
@@ -1460,13 +1512,13 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const mirror = container.querySelector('[aria-hidden="true"]');
+      const mirror = screen.getByTestId('askbar-mirror');
       expect(mirror).not.toBeNull();
       expect(mirror!.classList.contains('pointer-events-none')).toBe(true);
     });
 
     it('highlights /screen command in violet in the mirror div', () => {
-      const { container } = render(
+      render(
         <AskBarView
           {...IMAGE_DEFAULTS}
           query="/screen explain this"
@@ -1478,14 +1530,14 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const mirror = container.querySelector('[aria-hidden="true"]');
+      const mirror = screen.getByTestId('askbar-mirror');
       const highlighted = mirror!.querySelector('.text-violet-400');
       expect(highlighted).not.toBeNull();
       expect(highlighted!.textContent).toBe('/screen');
     });
 
     it('highlights multiple commands in the mirror div', () => {
-      const { container } = render(
+      render(
         <AskBarView
           {...IMAGE_DEFAULTS}
           query="/screen /think explain"
@@ -1497,7 +1549,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const mirror = container.querySelector('[aria-hidden="true"]');
+      const mirror = screen.getByTestId('askbar-mirror');
       const highlighted = mirror!.querySelectorAll('.text-violet-400');
       expect(highlighted).toHaveLength(2);
       expect(highlighted[0].textContent).toBe('/screen');
@@ -1505,7 +1557,7 @@ describe('AskBarView', () => {
     });
 
     it('does not highlight partial command matches like /screensaver', () => {
-      const { container } = render(
+      render(
         <AskBarView
           {...IMAGE_DEFAULTS}
           query="/screensaver is nice"
@@ -1517,13 +1569,13 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const mirror = container.querySelector('[aria-hidden="true"]');
+      const mirror = screen.getByTestId('askbar-mirror');
       expect(mirror!.querySelector('.text-violet-400')).toBeNull();
       expect(mirror!.textContent).toBe('/screensaver is nice');
     });
 
     it('renders plain text in mirror div when no commands present', () => {
-      const { container } = render(
+      render(
         <AskBarView
           {...IMAGE_DEFAULTS}
           query="hello world"
@@ -1535,7 +1587,7 @@ describe('AskBarView', () => {
           inputRef={makeRef()}
         />,
       );
-      const mirror = container.querySelector('[aria-hidden="true"]');
+      const mirror = screen.getByTestId('askbar-mirror');
       expect(mirror!.querySelector('.text-violet-400')).toBeNull();
       expect(mirror!.textContent).toBe('hello world');
     });
@@ -1595,7 +1647,7 @@ describe('AskBarView', () => {
         />,
       );
       const textarea = container.querySelector('textarea')!;
-      const mirror = container.querySelector('[aria-hidden="true"]')!;
+      const mirror = screen.getByTestId('askbar-mirror');
 
       // Simulate scrolling
       Object.defineProperty(textarea, 'scrollTop', {

@@ -46,7 +46,7 @@ const ONBOARDING_EVENT = 'thuki://onboarding';
 const HIDE_COMMIT_DELAY_MS = 350;
 
 /** Must match `OVERLAY_LOGICAL_WIDTH` in `src-tauri/src/lib.rs`. */
-const OVERLAY_WIDTH = 600;
+const OVERLAY_WIDTH = 900;
 /** Total transparent padding around the morphing container: pt-2(8) + pb-6(24) + motion py-2(16). */
 const CONTAINER_VERTICAL_PADDING = 48;
 /** Max morphing-container height in chat mode (matches `max-h-[600px]`) + vertical padding. */
@@ -54,6 +54,11 @@ const MAX_CHAT_WINDOW_HEIGHT = 600 + CONTAINER_VERTICAL_PADDING;
 
 /** Must match `OVERLAY_LOGICAL_HEIGHT_COLLAPSED` in `src-tauri/src/lib.rs`. */
 const COLLAPSED_WINDOW_HEIGHT = 80;
+
+type ModelConfigState = {
+  active: string;
+  all: string[];
+};
 
 /**
  * Parses a message to detect all valid slash commands present as whole words.
@@ -227,10 +232,23 @@ function App() {
    */
   const [sessionId, setSessionId] = useState(0);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
-  const [modelConfig, setModelConfig] = useState<{
-    active: string;
-    all: string[];
-  } | null>(null);
+  const [modelConfig, setModelConfig] = useState<ModelConfigState | null>(null);
+
+  const refreshModelConfig = useCallback(async () => {
+    const config = await invoke<ModelConfigState>('get_model_config');
+    setModelConfig(config);
+  }, []);
+
+  const handleModelChange = useCallback(async (model: string) => {
+    try {
+      const config = await invoke<ModelConfigState>('set_active_model', {
+        model,
+      });
+      setModelConfig(config);
+    } catch {
+      // Leave the previous selection intact if the backend rejects the switch.
+    }
+  }, []);
 
   /**
    * True when the window is near the screen bottom and should grow upward.
@@ -395,6 +413,7 @@ function App() {
         for (const img of prev) URL.revokeObjectURL(img.blobUrl);
         return [];
       });
+      void refreshModelConfig();
       pendingSubmitRef.current = null;
       screenCapturePendingRef.current = false;
       screenCaptureInputSnapshotRef.current = null;
@@ -406,7 +425,7 @@ function App() {
       resetHistory();
       setOverlayState('visible');
     },
-    [reset, resetHistory],
+    [refreshModelConfig, reset, resetHistory],
   );
 
   /**
@@ -1228,10 +1247,8 @@ function App() {
 
   /** Fetches model configuration from the backend once at mount. */
   useEffect(() => {
-    void invoke<{ active: string; all: string[] }>('get_model_config').then(
-      setModelConfig,
-    );
-  }, []);
+    void refreshModelConfig();
+  }, [refreshModelConfig]);
 
   /**
    * Synchronizes the React animation state with Tauri-driven overlay visibility
@@ -1285,12 +1302,14 @@ function App() {
   }, [requestHideOverlay]);
 
   const handleMinimize = useCallback(() => {
-    void getCurrentWindow().minimize();
-  }, []);
+    handleCloseOverlay();
+  }, [handleCloseOverlay]);
 
   /** Copy the last assistant response to the clipboard. */
   const handleCopyLastResponse = useCallback(() => {
-    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((m) => m.role === 'assistant');
     if (lastAssistant?.content) {
       void navigator.clipboard.writeText(lastAssistant.content);
     }
@@ -1327,7 +1346,13 @@ function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleCloseOverlay, handleNewConversation, handleSave, handleHistoryToggle, handleCopyLastResponse]);
+  }, [
+    handleCloseOverlay,
+    handleNewConversation,
+    handleSave,
+    handleHistoryToggle,
+    handleCopyLastResponse,
+  ]);
 
   /** Programmatic focus when the overlay becomes visible. */
   useEffect(() => {
@@ -1371,6 +1396,7 @@ function App() {
    */
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     const el = e.target as HTMLElement | null;
+    const root = e.currentTarget as HTMLElement;
 
     // 1. Allow native text selection in explicitly selectable regions.
     // If the click occurs inside a chat bubble (which has .select-text),
@@ -1392,6 +1418,32 @@ function App() {
     let current = el;
     while (current) {
       if (INTERACTIVE_TAGS.has(current.tagName.toUpperCase())) return;
+      if (
+        current !== root &&
+        (current.dataset.noWindowDrag !== undefined ||
+          current.getAttribute('role') === 'dialog')
+      ) {
+        return;
+      }
+
+      if (current !== root) {
+        const style = window.getComputedStyle(current);
+        const hasVerticalScrollArea =
+          (style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+          current.scrollHeight > current.clientHeight;
+        const hasHorizontalScrollArea =
+          (style.overflowX === 'auto' || style.overflowX === 'scroll') &&
+          current.scrollWidth > current.clientWidth;
+
+        // Native scrollbars in WebView report the scroll container as the
+        // target, not a separate DOM node. Never start window dragging from
+        // a scrollable region, or the scrollbar becomes unusable.
+        if (hasVerticalScrollArea || hasHorizontalScrollArea) {
+          return;
+        }
+      }
+
+      if (current === root) break;
       current = current.parentElement;
     }
 
@@ -1439,7 +1491,7 @@ function App() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -16, scale: 0.98 }}
             transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-            className="w-full max-w-2xl px-4 py-2 overflow-visible"
+            className="w-full max-w-[900px] px-4 py-2 overflow-visible"
           >
             {/* Relative wrapper — serves as the positioning context for the
                 chat-mode history dropdown so it can sit outside the morphing
@@ -1560,6 +1612,9 @@ function App() {
                   onImageRemove={handleImageRemove}
                   onImagePreview={handleAskBarImagePreview}
                   onScreenshot={handleScreenshot}
+                  availableModels={modelConfig?.all ?? [DEFAULT_MODEL_FALLBACK]}
+                  activeModel={modelConfig?.active ?? DEFAULT_MODEL_FALLBACK}
+                  onModelChange={handleModelChange}
                   isDragOver={isDragOver ?? undefined}
                 />
               </div>

@@ -208,6 +208,7 @@ export function ConversationView({
 
       <div
         ref={scrollContainerRef}
+        data-no-window-drag
         className="chat-messages-scroll px-5 py-4 flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto"
       >
         {messages.map((msg, i) => {

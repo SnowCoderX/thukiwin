@@ -8,35 +8,34 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
-/// Captures the full screen using GDI BitBlt and returns raw RGBA pixel bytes.
+/// Captures the given desktop region using GDI BitBlt and returns raw RGBA pixels.
 #[cfg(target_os = "windows")]
-pub fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
+pub fn capture_monitor_pixels(
+    origin_x: i32,
+    origin_y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(u32, u32, Vec<u8>), String> {
     unsafe {
-        let screen_width = GetSystemMetrics(SM_CXSCREEN);
-        let screen_height = GetSystemMetrics(SM_CYSCREEN);
-
-        if screen_width <= 0 || screen_height <= 0 {
-            return Err("Failed to get screen dimensions".to_string());
+        if width == 0 || height == 0 {
+            return Err("Failed to get monitor dimensions".to_string());
         }
-
-        let width = screen_width as u32;
-        let height = screen_height as u32;
 
         let screen_dc = GetDC(None);
 
         let mem_dc = CreateCompatibleDC(Some(screen_dc));
-        let bitmap = CreateCompatibleBitmap(screen_dc, screen_width, screen_height);
+        let bitmap = CreateCompatibleBitmap(screen_dc, width as i32, height as i32);
         let _old_bitmap = SelectObject(mem_dc, bitmap.into());
 
         BitBlt(
             mem_dc,
             0,
             0,
-            screen_width,
-            screen_height,
+            width as i32,
+            height as i32,
             Some(screen_dc),
-            0,
-            0,
+            origin_x,
+            origin_y,
             SRCCOPY,
         )
         .map_err(|e| format!("BitBlt failed: {e}"))?;
@@ -72,6 +71,19 @@ pub fn capture_full_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
     }
 }
 
+/// Fallback capture for the primary desktop area when monitor lookup fails.
+#[cfg(target_os = "windows")]
+pub fn capture_primary_screen_pixels() -> Result<(u32, u32, Vec<u8>), String> {
+    unsafe {
+        let width = GetSystemMetrics(SM_CXSCREEN);
+        let height = GetSystemMetrics(SM_CYSCREEN);
+        if width <= 0 || height <= 0 {
+            return Err("Failed to get primary screen dimensions".to_string());
+        }
+        capture_monitor_pixels(0, 0, width as u32, height as u32)
+    }
+}
+
 /// Tauri command: silently captures the full screen and returns the absolute
 /// file path of the saved image.
 #[cfg(target_os = "windows")]
@@ -82,8 +94,21 @@ pub async fn capture_full_screen_command(app_handle: tauri::AppHandle) -> Result
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
 
+    let monitor = app_handle
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?
+        .current_monitor()
+        .map_err(|e| format!("failed to get current monitor: {e}"))?;
+
     let result = tokio::task::spawn_blocking(move || {
-        let (width, height, rgba_bytes) = capture_full_screen_pixels()?;
+        let (width, height, rgba_bytes) = match monitor {
+            Some(monitor) => {
+                let position = monitor.position();
+                let size = monitor.size();
+                capture_monitor_pixels(position.x, position.y, size.width, size.height)?
+            }
+            None => capture_primary_screen_pixels()?,
+        };
 
         let buf =
             image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(width, height, rgba_bytes)

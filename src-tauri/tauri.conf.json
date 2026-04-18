@@ -14,9 +14,9 @@
       {
         "label": "main",
         "title": "ThukiWin",
-        "width": 600,
+        "width": 900,
         "height": 700,
-        "resizable": true,
+        "resizable": false,
         "fullscreen": false,
         "transparent": true,
         "decorations": false,
@@ -27,7 +27,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: asset: https://asset.localhost; media-src 'self' blob:;",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: asset: http://asset.localhost https://asset.localhost; media-src 'self' blob: data:;",
       "assetProtocol": {
         "enable": true,
         "scope": ["$APPDATA/images/**"]

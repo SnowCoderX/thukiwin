@@ -65,6 +65,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 - **Throwaway conversations:** fast, lightweight interactions without the overhead of a full chat app
 - **Conversation history:** persist and revisit past conversations across sessions
 - **Fully local LLM:** powered by Ollama; no API keys, no accounts, no cost per query
+- **Model picker in the ask bar:** switches between all locally pulled Ollama models without restarting the app
 - **Image input:** paste or drag images and screenshots directly into the chat
 - **Screen capture:** type `/screen` to instantly capture your entire screen and attach it to your question as context
 - **Slash commands:** built-in prompt shortcuts for common tasks: `/translate`, `/rewrite`, `/tldr`, `/refine`, `/bullets`, `/todos`. Highlight text anywhere, summon ThukiWin, type a command, and hit Enter
@@ -74,13 +75,13 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 ## Requirements
 
-| Requirement | Minimum | Notes |
-|---|---|---|
-| **OS** | Windows 10 64-bit (1809+) | Windows 11 recommended |
-| **RAM** | 8 GB | 16 GB+ recommended for larger models |
-| **GPU** | Not required | CPU inference works; GPU speeds up larger models |
-| **Disk** | 2 GB (app) + model size | Models are typically 2-8 GB each |
-| **Ollama** | Latest | Must be running at `http://127.0.0.1:11434` |
+| Requirement | Minimum                   | Notes                                            |
+| ----------- | ------------------------- | ------------------------------------------------ |
+| **OS**      | Windows 10 64-bit (1809+) | Windows 11 recommended                           |
+| **RAM**     | 8 GB                      | 16 GB+ recommended for larger models             |
+| **GPU**     | Not required              | CPU inference works; GPU speeds up larger models |
+| **Disk**    | 2 GB (app) + model size   | Models are typically 2-8 GB each                 |
+| **Ollama**  | Latest                    | Must be running at `http://127.0.0.1:11434`      |
 
 ### Build Requirements (for building from source)
 
@@ -149,6 +150,7 @@ bun run build:all
 ```
 
 The output installers will be at:
+
 - `src-tauri/target/release/bundle/msi/ThukiWin_x64_en-US.msi`
 - `src-tauri/target/release/bundle/nsis/ThukiWin_x64-setup.exe`
 

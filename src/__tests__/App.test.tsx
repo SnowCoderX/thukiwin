@@ -35,6 +35,39 @@ describe('App', () => {
     expect(invoke).toHaveBeenCalledWith('get_model_config');
   });
 
+  it('switches the active model from the ask bar', async () => {
+    enableChannelCaptureWithResponses({
+      get_model_config: {
+        active: 'gemma4:e2b',
+        all: ['gemma4:e2b', 'llama3.2'],
+      },
+      set_active_model: {
+        active: 'llama3.2',
+        all: ['gemma4:e2b', 'llama3.2'],
+      },
+    });
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    await act(async () => {
+      fireEvent.change(
+        screen.getByRole('combobox', { name: /select model/i }),
+        {
+          target: { value: 'llama3.2' },
+        },
+      );
+    });
+
+    expect(invoke).toHaveBeenCalledWith('set_active_model', {
+      model: 'llama3.2',
+    });
+    expect(screen.getByRole('combobox', { name: /select model/i })).toHaveValue(
+      'llama3.2',
+    );
+  });
+
   it('grows upward when near bottom screen edge', async () => {
     const { container } = render(<App />);
     await act(async () => {});
@@ -4151,7 +4184,10 @@ describe('App', () => {
       });
       await act(async () => {});
 
-      expect(invoke).toHaveBeenCalledWith('save_conversation', expect.any(Object));
+      expect(invoke).toHaveBeenCalledWith(
+        'save_conversation',
+        expect.any(Object),
+      );
     });
 
     it('toggles history on Ctrl+H', async () => {

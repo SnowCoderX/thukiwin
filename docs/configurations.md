@@ -20,27 +20,27 @@ For packaged builds, backend `THUKI_*` values are embedded into the app at build
 
 Controls how selected-text quotes are displayed in the AskBar preview and chat bubbles, and how much context is forwarded to the LLM.
 
-| Variable | Description | Default | Type |
-| :--- | :--- | :--- | :--- |
-| `VITE_QUOTE_MAX_DISPLAY_LINES` | Maximum number of lines shown in the quote preview. Lines beyond this limit are truncated with `...`. Empty lines in the selection are skipped and do not count toward this limit. | `4` | Positive integer |
-| `VITE_QUOTE_MAX_DISPLAY_CHARS` | Maximum total characters shown in the quote preview. If a line would push the total past this limit, it is truncated mid-line with `...`. | `300` | Positive integer |
-| `VITE_QUOTE_MAX_CONTEXT_LENGTH` | Maximum length (in characters) of selected context text included in the prompt sent to Ollama. This is a security and performance cap; selections longer than this are silently truncated before reaching the LLM. | `4096` | Positive integer |
+| Variable                        | Description                                                                                                                                                                                                        | Default | Type             |
+| :------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------ | :--------------- |
+| `VITE_QUOTE_MAX_DISPLAY_LINES`  | Maximum number of lines shown in the quote preview. Lines beyond this limit are truncated with `...`. Empty lines in the selection are skipped and do not count toward this limit.                                 | `4`     | Positive integer |
+| `VITE_QUOTE_MAX_DISPLAY_CHARS`  | Maximum total characters shown in the quote preview. If a line would push the total past this limit, it is truncated mid-line with `...`.                                                                          | `300`   | Positive integer |
+| `VITE_QUOTE_MAX_CONTEXT_LENGTH` | Maximum length (in characters) of selected context text included in the prompt sent to Ollama. This is a security and performance cap; selections longer than this are silently truncated before reaching the LLM. | `4096`  | Positive integer |
 
 ### System Prompt
 
 Controls the system prompt prepended to every conversation sent to Ollama.
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
+| Variable              | Description                                                                                  | Default                                                             |
+| :-------------------- | :------------------------------------------------------------------------------------------- | :------------------------------------------------------------------ |
 | `THUKI_SYSTEM_PROMPT` | Custom system prompt for all conversations. If unset or empty, the built-in default is used. | Built-in secretary persona prompt (see `src-tauri/src/commands.rs`) |
 
 ### Model Configuration
 
 Controls which Ollama model(s) Thuki uses for inference.
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `THUKI_SUPPORTED_AI_MODELS` | Comma-separated list of Ollama model names. The first entry is the active model used for all inference. Additional entries are available for future in-app model switching. | `gemini-3-flash-preview` |
+| Variable                    | Description                                                                                                                                                                                                                                  | Default                  |
+| :-------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------- |
+| `THUKI_SUPPORTED_AI_MODELS` | Comma-separated list of preferred Ollama model names. The first entry is the initial active model. In-app model switching also discovers all locally pulled Ollama models from `/api/tags`; configured names stay first in the picker order. | `gemini-3-flash-preview` |
 
 **Example:**
 
@@ -68,10 +68,10 @@ All configuration values are validated at startup via `src/config/index.ts`:
 
 Vite loads `.env` files in the following order (later files override earlier ones):
 
-| File | Purpose | Committed |
-| :--- | :--- | :--- |
-| `.env.example` | Reference template with documented defaults | Yes |
-| `.env` | Local configuration | No (gitignored) |
-| `.env.local` | Local overrides (highest priority) | No (gitignored via `*.local`) |
-| `.env.development` | Dev-only overrides (loaded when `bun run dev`) | Optional |
-| `.env.production` | Prod-only overrides (loaded when `bun run build:all`) | Optional |
+| File               | Purpose                                               | Committed                     |
+| :----------------- | :---------------------------------------------------- | :---------------------------- |
+| `.env.example`     | Reference template with documented defaults           | Yes                           |
+| `.env`             | Local configuration                                   | No (gitignored)               |
+| `.env.local`       | Local overrides (highest priority)                    | No (gitignored via `*.local`) |
+| `.env.development` | Dev-only overrides (loaded when `bun run dev`)        | Optional                      |
+| `.env.production`  | Prod-only overrides (loaded when `bun run build:all`) | Optional                      |

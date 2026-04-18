@@ -73,7 +73,7 @@ tauri_panel! {
 // ─── Window helpers ─────────────────────────────────────────────────────────
 
 /// Expected logical width of the overlay window for spawn-position calculations.
-const OVERLAY_LOGICAL_WIDTH: f64 = 600.0;
+const OVERLAY_LOGICAL_WIDTH: f64 = 900.0;
 /// Collapsed bar height used for Y-clamp at show time. The window starts collapsed;
 /// the ResizeObserver expands it after mount.
 const OVERLAY_LOGICAL_HEIGHT_COLLAPSED: f64 = 80.0;
@@ -928,6 +928,10 @@ pub fn run() {
             // ── Activation listener (Windows) ─────────────────────────
             #[cfg(target_os = "windows")]
             {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_resizable(false);
+                }
+
                 let app_handle = app.handle().clone();
                 let activator = windows_activator::OverlayActivator::new();
                 activator.start(move || {
@@ -979,6 +983,8 @@ pub fn run() {
             commands::reset_conversation,
             #[cfg(not(coverage))]
             commands::get_model_config,
+            #[cfg(not(coverage))]
+            commands::set_active_model,
             #[cfg(not(coverage))]
             history::save_conversation,
             #[cfg(not(coverage))]
