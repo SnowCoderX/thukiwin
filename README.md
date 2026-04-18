@@ -81,7 +81,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 | **RAM**     | 8 GB                      | 16 GB+ recommended for larger models             |
 | **GPU**     | Not required              | CPU inference works; GPU speeds up larger models |
 | **Disk**    | 2 GB (app) + model size   | Models are typically 2-8 GB each                 |
-| **Ollama**  | Latest                    | Must be running at `http://127.0.0.1:11434`      |
+| **Ollama**  | Latest                    | Must be running at `http://127.0.0.1:11434`.<br/>ThukiWin automatically bypasses your system proxy for localhost, so even if you have a global proxy enabled, Ollama connections will work. |
 
 ### Build Requirements (for building from source)
 
@@ -94,7 +94,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 ### Step 1: Set Up Your AI Engine
 
-> **Default model:** ThukiWin ships with `gemini-3-flash-preview` by default. You can change the model via `THUKI_SUPPORTED_AI_MODELS`; dev runs read it from your local env files, and packaged builds embed the value present at build time. See [Configurations](docs/configurations.md).
+ThukiWin works with any model you have pulled in Ollama. By default, it automatically uses the first available model. You can switch models at any time from the **model picker** in the ask bar.
 
 1. **Install Ollama**
 
@@ -107,7 +107,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 2. **Pull a model**
 
    ```powershell
-   ollama pull gemini-3-flash-preview
+   ollama pull gemma4:e4b
    ```
 
    > **Note:** Model files are large (typically 2-8 GB). This step can take several minutes depending on your internet connection. You only need to do it once.
@@ -166,6 +166,13 @@ ThukiWin uses a low-level Windows keyboard hook (`SetWindowsHookExW` with `WH_KE
 ### Overlay Window
 
 ThukiWin uses Tauri's `always_on_top` and `skip_taskbar` APIs combined with Win32 window styles to float above all other windows without appearing in the taskbar or stealing focus from the app you're working in.
+
+**Recent improvements:**
+- Minimize button now reliably hides the overlay (no more stuck windows).
+- Scrolling inside the chat area no longer accidentally drags the window.
+- Window resizing is constrained to the intended behavior – no unpredictable sizing.
+- Screenshot previews render correctly inside the overlay.
+- When capturing a screenshot, ThukiWin captures the monitor that currently contains the app window (multi‑monitor friendly).
 
 ### Screen Capture
 
