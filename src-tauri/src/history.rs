@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri::State;
 
-use crate::commands::{ChatMessage, ConversationHistory, ModelConfig, SystemPrompt};
+use crate::commands::{
+    ChatMessage, ConversationHistory, ModelConfig, OllamaHttpClient, SystemPrompt,
+};
 use crate::database;
 
 /// Thread-safe wrapper around the SQLite connection.
@@ -205,7 +207,7 @@ pub async fn generate_title(
     conversation_id: String,
     messages: Vec<SaveMessagePayload>,
     db: State<'_, Database>,
-    client: State<'_, reqwest::Client>,
+    client: State<'_, OllamaHttpClient>,
     system_prompt: State<'_, SystemPrompt>,
     model_config: State<'_, ModelConfig>,
 ) -> Result<(), String> {
@@ -253,7 +255,7 @@ pub async fn generate_title(
         &model_config.active,
         title_messages,
         false,
-        &client,
+        &client.0,
         cancel_token,
         |_| {}, // No per-chunk side effects; we use the accumulated return value.
     )

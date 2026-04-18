@@ -93,7 +93,7 @@ Most AI tools require accounts, API keys, or subscriptions that bill you per tok
 
 ### Step 1: Set Up Your AI Engine
 
-> **Default model:** ThukiWin ships with `gemini-3-flash-preview` by default. You can change the model at runtime via the `THUKI_SUPPORTED_AI_MODELS` environment variable; see [Configurations](docs/configurations.md).
+> **Default model:** ThukiWin ships with `gemini-3-flash-preview` by default. You can change the model via `THUKI_SUPPORTED_AI_MODELS`; dev runs read it from your local env files, and packaged builds embed the value present at build time. See [Configurations](docs/configurations.md).
 
 1. **Install Ollama**
 

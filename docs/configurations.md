@@ -10,6 +10,8 @@ copy .env.example .env
 
 Edit `.env` to override any defaults. Changes take effect on the next `bun run dev` or `bun run build:all`.
 
+For packaged builds, backend `THUKI_*` values are embedded into the app at build time from your local env files, so the installed app keeps using the model/system-prompt configuration you built it with even when no project-root `.env` exists at runtime.
+
 > `.env` is gitignored. `.env.example` is committed as the reference template.
 
 ## Configuration Reference

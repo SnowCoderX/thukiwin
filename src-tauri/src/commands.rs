@@ -10,6 +10,23 @@ use tokio_util::sync::CancellationToken;
 pub const DEFAULT_OLLAMA_URL: &str = "http://127.0.0.1:11434";
 pub const DEFAULT_MODEL_NAME: &str = "gemini-3-flash-preview";
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/system_prompt.txt");
+const EMBEDDED_SYSTEM_PROMPT: Option<&str> = option_env!("THUKI_SYSTEM_PROMPT");
+const EMBEDDED_SUPPORTED_AI_MODELS: Option<&str> = option_env!("THUKI_SUPPORTED_AI_MODELS");
+
+/// Dedicated localhost-only HTTP client for Ollama calls.
+///
+/// Disables system proxy usage so VPN/proxy software cannot intercept or break
+/// requests to `127.0.0.1`.
+pub struct OllamaHttpClient(pub reqwest::Client);
+
+/// Builds the dedicated Ollama client used for all local inference requests.
+pub fn build_ollama_http_client() -> OllamaHttpClient {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("failed to build Ollama HTTP client");
+    OllamaHttpClient(client)
+}
 
 /// Classifies the kind of error returned from the Ollama backend.
 /// Used by the frontend to pick accent bar color and display copy.
@@ -34,14 +51,18 @@ pub struct OllamaError {
 }
 
 /// Maps an HTTP status code to a user-friendly `OllamaError`.
-pub fn classify_http_error(status: u16) -> OllamaError {
+pub fn classify_http_error(status: u16, model: &str) -> OllamaError {
     match status {
         404 => OllamaError {
             kind: OllamaErrorKind::ModelNotFound,
             message: format!(
                 "Model not found\nRun: ollama pull {} in a terminal.",
-                DEFAULT_MODEL_NAME
+                model
             ),
+        },
+        502 | 503 | 504 => OllamaError {
+            kind: OllamaErrorKind::Other,
+            message: "Could not reach Ollama\nCheck VPN/proxy settings and confirm Ollama is listening on 127.0.0.1:11434.".to_string(),
         },
         _ => OllamaError {
             kind: OllamaErrorKind::Other,
@@ -189,11 +210,17 @@ impl ConversationHistory {
 /// environment variable, falling back to a built-in default.
 pub struct SystemPrompt(pub String);
 
+fn runtime_or_embedded_env(name: &str, embedded: Option<&'static str>) -> Option<String> {
+    match std::env::var(name) {
+        Ok(value) => Some(value),
+        Err(_) => embedded.map(ToString::to_string),
+    }
+}
+
 /// Reads `THUKI_SYSTEM_PROMPT` from the environment, falling back to the
 /// built-in default when unset or empty.
 pub fn load_system_prompt() -> String {
-    std::env::var("THUKI_SYSTEM_PROMPT")
-        .ok()
+    runtime_or_embedded_env("THUKI_SYSTEM_PROMPT", EMBEDDED_SYSTEM_PROMPT)
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string())
 }
@@ -210,16 +237,16 @@ pub struct ModelConfig {
 /// `ModelConfig`. Trims whitespace around each entry and filters empty entries.
 /// Defaults to `[DEFAULT_MODEL_NAME]` when the variable is unset or empty.
 pub fn load_model_config() -> ModelConfig {
-    let models: Vec<String> = std::env::var("THUKI_SUPPORTED_AI_MODELS")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| {
-            s.split(',')
-                .map(|m| m.trim().to_string())
-                .filter(|m| !m.is_empty())
-                .collect()
-        })
-        .unwrap_or_else(|| vec![DEFAULT_MODEL_NAME.to_string()]);
+    let models: Vec<String> =
+        runtime_or_embedded_env("THUKI_SUPPORTED_AI_MODELS", EMBEDDED_SUPPORTED_AI_MODELS)
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| {
+                s.split(',')
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![DEFAULT_MODEL_NAME.to_string()]);
     let active = models
         .first()
         .cloned()
@@ -271,7 +298,7 @@ pub async fn stream_ollama_chat(
         Ok(response) => {
             if !response.status().is_success() {
                 let status = response.status().as_u16();
-                on_chunk(StreamChunk::Error(classify_http_error(status)));
+                on_chunk(StreamChunk::Error(classify_http_error(status, model)));
                 return accumulated;
             }
 
@@ -359,7 +386,7 @@ pub async fn ask_ollama(
     image_paths: Option<Vec<String>>,
     think: bool,
     on_event: Channel<StreamChunk>,
-    client: State<'_, reqwest::Client>,
+    client: State<'_, OllamaHttpClient>,
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
     system_prompt: State<'_, SystemPrompt>,
@@ -415,7 +442,7 @@ pub async fn ask_ollama(
         &model_config.active,
         messages,
         think,
-        &client,
+        &client.0,
         cancel_token.clone(),
         |chunk| {
             let _ = on_event.send(chunk);
@@ -504,7 +531,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
         let messages = vec![ChatMessage {
@@ -542,7 +569,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -566,7 +593,7 @@ mod tests {
 
     #[tokio::test]
     async fn handles_connection_refused() {
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -597,7 +624,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -626,7 +653,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -663,7 +690,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -702,7 +729,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -742,7 +769,7 @@ mod tests {
                 .await;
         });
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -772,7 +799,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -805,7 +832,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -834,7 +861,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -878,7 +905,7 @@ mod tests {
             server_done_clone.notified().await;
         });
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let token_clone = token.clone();
         let (chunks, callback) = collect_chunks();
@@ -919,7 +946,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         token.cancel();
 
@@ -952,7 +979,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (_, callback) = collect_chunks();
         let messages = vec![
@@ -991,7 +1018,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -1063,20 +1090,57 @@ mod tests {
     /// tests race on shared environment variables.
     static ENV_LOCK: StdMutex<()> = StdMutex::new(());
 
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn test_client() -> reqwest::Client {
+        build_ollama_http_client().0
+    }
+
+    fn expected_default_model_config() -> ModelConfig {
+        let models: Vec<String> = EMBEDDED_SUPPORTED_AI_MODELS
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| {
+                s.split(',')
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![DEFAULT_MODEL_NAME.to_string()]);
+        let active = models
+            .first()
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
+
+        ModelConfig {
+            active,
+            all: models,
+        }
+    }
+
+    fn expected_default_system_prompt() -> String {
+        EMBEDDED_SYSTEM_PROMPT
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(DEFAULT_SYSTEM_PROMPT)
+            .to_string()
+    }
+
     // ── load_model_config tests ──────────────────────────────────────────────
 
     #[test]
     fn load_model_config_returns_default_when_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         std::env::remove_var("THUKI_SUPPORTED_AI_MODELS");
         let config = load_model_config();
-        assert_eq!(config.active, DEFAULT_MODEL_NAME);
-        assert_eq!(config.all, vec![DEFAULT_MODEL_NAME.to_string()]);
+        let expected = expected_default_model_config();
+        assert_eq!(config.active, expected.active);
+        assert_eq!(config.all, expected.all);
     }
 
     #[test]
     fn load_model_config_reads_single_model() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e4b");
         let config = load_model_config();
         assert_eq!(config.active, "gemma4:e4b");
@@ -1086,7 +1150,7 @@ mod tests {
 
     #[test]
     fn load_model_config_reads_multiple_models_first_is_active() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e2b,gemma4:e4b");
         let config = load_model_config();
         assert_eq!(config.active, "gemma4:e2b");
@@ -1099,7 +1163,7 @@ mod tests {
 
     #[test]
     fn load_model_config_trims_whitespace_around_entries() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", " gemma4:e2b , gemma4:e4b ");
         let config = load_model_config();
         assert_eq!(config.active, "gemma4:e2b");
@@ -1112,7 +1176,7 @@ mod tests {
 
     #[test]
     fn load_model_config_falls_back_to_default_when_whitespace_only() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "   ");
         let config = load_model_config();
         assert_eq!(config.active, DEFAULT_MODEL_NAME);
@@ -1122,7 +1186,7 @@ mod tests {
 
     #[test]
     fn load_model_config_filters_empty_entries_from_list() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", "gemma4:e2b,,gemma4:e4b");
         let config = load_model_config();
         assert_eq!(
@@ -1134,7 +1198,7 @@ mod tests {
 
     #[test]
     fn load_model_config_falls_back_when_all_entries_are_empty_commas() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         // All entries filter to empty strings, leaving an empty list.
         // The active model must still fall back to DEFAULT_MODEL_NAME.
         std::env::set_var("THUKI_SUPPORTED_AI_MODELS", ",");
@@ -1158,7 +1222,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (_, callback) = collect_chunks();
 
@@ -1178,16 +1242,16 @@ mod tests {
 
     #[test]
     fn load_system_prompt_returns_default_when_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         std::env::remove_var("THUKI_SYSTEM_PROMPT");
 
         let prompt = load_system_prompt();
-        assert_eq!(prompt, DEFAULT_SYSTEM_PROMPT);
+        assert_eq!(prompt, expected_default_system_prompt());
     }
 
     #[test]
     fn load_system_prompt_reads_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         std::env::set_var("THUKI_SYSTEM_PROMPT", "Custom prompt");
 
         let prompt = load_system_prompt();
@@ -1198,7 +1262,7 @@ mod tests {
 
     #[test]
     fn load_system_prompt_ignores_empty_env_var() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_guard();
         std::env::set_var("THUKI_SYSTEM_PROMPT", "   ");
 
         let prompt = load_system_prompt();
@@ -1234,28 +1298,28 @@ mod tests {
 
     #[test]
     fn classify_http_404_returns_model_not_found() {
-        let err = classify_http_error(404);
+        let err = classify_http_error(404, "gemma4:26b");
         assert_eq!(err.kind, OllamaErrorKind::ModelNotFound);
-        assert!(err.message.contains(DEFAULT_MODEL_NAME));
+        assert!(err.message.contains("gemma4:26b"));
     }
 
     #[test]
     fn classify_http_500_returns_other_with_status() {
-        let err = classify_http_error(500);
+        let err = classify_http_error(500, "test-model");
         assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("500"));
     }
 
     #[test]
     fn classify_http_401_returns_other_with_status() {
-        let err = classify_http_error(401);
+        let err = classify_http_error(401, "test-model");
         assert_eq!(err.kind, OllamaErrorKind::Other);
         assert!(err.message.contains("401"));
     }
 
     #[tokio::test]
     async fn connection_refused_emits_not_running_error() {
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -1287,7 +1351,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -1378,7 +1442,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -1424,7 +1488,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 
@@ -1465,7 +1529,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (_, callback) = collect_chunks();
 
@@ -1497,7 +1561,7 @@ mod tests {
             .create_async()
             .await;
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let token = CancellationToken::new();
         let (chunks, callback) = collect_chunks();
 

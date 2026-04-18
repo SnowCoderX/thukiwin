@@ -786,6 +786,21 @@ fn run_image_cleanup(app_handle: &tauri::AppHandle) {
     let _ = images::cleanup_orphaned_images(&base_dir, &referenced);
 }
 
+/// Loads backend env files for local/dev runs.
+///
+/// Packaged builds also embed selected backend env vars at compile time via
+/// `build.rs`, so installed apps keep working even when their working
+/// directory no longer points at the project root.
+fn load_backend_env() {
+    dotenvy::dotenv().ok();
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let _ = dotenvy::from_path(exe_dir.join(".env"));
+        }
+    }
+}
+
 /// Spawns a background Tokio task that runs the cleanup sweep on a fixed
 /// interval. Thin async wrapper — delegates to `run_image_cleanup`.
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -816,9 +831,9 @@ fn spawn_periodic_image_cleanup(app_handle: tauri::AppHandle) {
 /// Panics if the Tauri runtime fails to initialise.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Load .env file so THUKI_SYSTEM_PROMPT and future backend env vars
-    // work the same way as Vite's VITE_* vars for the frontend.
-    dotenvy::dotenv().ok();
+    // Load runtime env files when present. Packaged builds additionally rely
+    // on compile-time embedded fallbacks from `build.rs`.
+    load_backend_env();
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default();
@@ -929,6 +944,7 @@ pub fn run() {
 
             // ── Persistent HTTP client ────────────────────────────────
             app.manage(reqwest::Client::new());
+            app.manage(commands::build_ollama_http_client());
 
             // ── Generation + conversation state ─────────────────────
             app.manage(commands::GenerationState::new());
