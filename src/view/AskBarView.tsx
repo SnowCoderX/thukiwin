@@ -275,7 +275,7 @@ export function AskBarView({
   /** Ref to the mirror div behind the textarea for command highlighting. */
   const mirrorRef = useRef<HTMLDivElement>(null);
 
-  /** True when the UI should be locked — either generating or waiting for images. */
+  /** True when non-text controls should be locked — either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
   const canSubmit =
     (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
@@ -638,11 +638,10 @@ export function AskBarView({
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               onScroll={handleTextareaScroll}
-              disabled={isBusy}
               autoFocus
               rows={1}
               placeholder={isChatMode ? 'Reply...' : 'Ask Thuki anything...'}
-              className="relative w-full bg-transparent border-none outline-none text-transparent text-sm placeholder:text-text-secondary py-2 px-1 disabled:opacity-50 resize-none leading-relaxed"
+              className="relative w-full bg-transparent border-none outline-none text-transparent text-sm placeholder:text-text-secondary py-2 px-1 resize-none leading-relaxed"
               style={{ caretColor: 'var(--color-text-primary)' }}
             />
           </div>
