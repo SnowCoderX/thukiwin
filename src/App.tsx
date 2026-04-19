@@ -44,6 +44,8 @@ const ONBOARDING_EVENT = 'thuki://onboarding';
  * `AnimatePresence.onExitComplete` unreliable when the panel is unfocused.
  */
 const HIDE_COMMIT_DELAY_MS = 350;
+const CTRL_TAP_WINDOW_MS = 250;
+const CTRL_TAP_COOLDOWN_MS = 120;
 
 /** Must match `OVERLAY_LOGICAL_WIDTH` in `src-tauri/src/lib.rs`. */
 const OVERLAY_WIDTH = 900;
@@ -233,6 +235,10 @@ function App() {
   const [sessionId, setSessionId] = useState(0);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
   const [modelConfig, setModelConfig] = useState<ModelConfigState | null>(null);
+  const ctrlTapLastAtRef = useRef<number | null>(null);
+  const ctrlTapLastActivationAtRef = useRef<number | null>(null);
+  const ctrlTapDownRef = useRef(false);
+  const ctrlTapChordedRef = useRef(false);
 
   const refreshModelConfig = useCallback(async () => {
     const config = await invoke<ModelConfigState>('get_model_config');
@@ -1301,6 +1307,10 @@ function App() {
     requestHideOverlay();
   }, [requestHideOverlay]);
 
+  const handleQuitApp = useCallback(() => {
+    void invoke('quit_app');
+  }, []);
+
   const handleMinimize = useCallback(() => {
     handleCloseOverlay();
   }, [handleCloseOverlay]);
@@ -1318,6 +1328,16 @@ function App() {
   /** Global keyboard shortcuts: Escape/Ctrl+W hides overlay; Ctrl+N/S/H/Ctrl+Shift+C for actions. */
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (overlayState === 'visible') {
+        if (e.key === 'Control') {
+          ctrlTapDownRef.current = true;
+          ctrlTapChordedRef.current = false;
+        } else if (ctrlTapDownRef.current) {
+          ctrlTapChordedRef.current = true;
+          ctrlTapLastAtRef.current = null;
+        }
+      }
+
       if (((e.metaKey || e.ctrlKey) && e.key === 'w') || e.key === 'Escape') {
         e.preventDefault();
         handleCloseOverlay();
@@ -1344,9 +1364,48 @@ function App() {
         return;
       }
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (overlayState !== 'visible' || e.key !== 'Control') return;
+      if (!ctrlTapDownRef.current) return;
+
+      ctrlTapDownRef.current = false;
+      const wasChorded = ctrlTapChordedRef.current;
+      ctrlTapChordedRef.current = false;
+
+      if (wasChorded) {
+        ctrlTapLastAtRef.current = null;
+        return;
+      }
+
+      const now = Date.now();
+      const lastActivation = ctrlTapLastActivationAtRef.current;
+      if (
+        lastActivation !== null &&
+        now - lastActivation < CTRL_TAP_COOLDOWN_MS
+      ) {
+        return;
+      }
+
+      const lastTap = ctrlTapLastAtRef.current;
+      if (lastTap !== null && now - lastTap < CTRL_TAP_WINDOW_MS) {
+        ctrlTapLastAtRef.current = null;
+        ctrlTapLastActivationAtRef.current = now;
+        handleCloseOverlay();
+        return;
+      }
+
+      ctrlTapLastAtRef.current = now;
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keyup', onKeyUp, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('keyup', onKeyUp, true);
+    };
   }, [
+    overlayState,
     handleCloseOverlay,
     handleNewConversation,
     handleSave,
@@ -1360,6 +1419,14 @@ function App() {
       const raf = requestAnimationFrame(() => inputRef.current?.focus());
       return () => cancelAnimationFrame(raf);
     }
+  }, [overlayState]);
+
+  useEffect(() => {
+    if (overlayState === 'visible') return;
+    ctrlTapLastAtRef.current = null;
+    ctrlTapLastActivationAtRef.current = null;
+    ctrlTapDownRef.current = false;
+    ctrlTapChordedRef.current = false;
   }, [overlayState]);
 
   /**
@@ -1524,7 +1591,7 @@ function App() {
                           : messages
                       }
                       isGenerating={isGenerating || isSubmitPending}
-                      onClose={handleCloseOverlay}
+                      onClose={handleQuitApp}
                       onMinimize={handleMinimize}
                       onSave={handleSave}
                       isSaved={isSaved}

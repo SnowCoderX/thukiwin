@@ -29,8 +29,8 @@ use crate::context::ActivationContext;
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
-const ACTIVATION_WINDOW: Duration = Duration::from_millis(400);
-const ACTIVATION_COOLDOWN: Duration = Duration::from_millis(600);
+const ACTIVATION_WINDOW: Duration = Duration::from_millis(250);
+const ACTIVATION_COOLDOWN: Duration = Duration::from_millis(120);
 const VK_LCONTROL: i32 = 0xA2;
 const VK_RCONTROL: i32 = 0xA3;
 
@@ -38,8 +38,9 @@ const VK_RCONTROL: i32 = 0xA3;
 
 static GLOBAL_ACTIVATION_STATE: LazyLock<Mutex<ActivationState>> = LazyLock::new(|| {
     Mutex::new(ActivationState {
-        last_trigger: None,
-        is_pressed: false,
+        last_tap: None,
+        ctrl_is_down: false,
+        current_press_chorded: false,
         last_activation: None,
     })
 });
@@ -55,14 +56,31 @@ static GLOBAL_HOOK_ACTIVE: AtomicBool = AtomicBool::new(false);
 // ─── Activation Logic ──────────────────────────────────────────────────────────
 
 struct ActivationState {
-    last_trigger: Option<Instant>,
-    is_pressed: bool,
+    last_tap: Option<Instant>,
+    ctrl_is_down: bool,
+    current_press_chorded: bool,
     last_activation: Option<Instant>,
 }
 
-fn evaluate_activation(state: &mut ActivationState, is_press: bool) -> bool {
-    if is_press && !state.is_pressed {
-        state.is_pressed = true;
+fn evaluate_activation(state: &mut ActivationState, is_ctrl_down: bool) -> bool {
+    if is_ctrl_down {
+        if !state.ctrl_is_down {
+            state.ctrl_is_down = true;
+            state.current_press_chorded = false;
+        }
+        return false;
+    }
+
+    if state.ctrl_is_down {
+        state.ctrl_is_down = false;
+        let was_chorded = state.current_press_chorded;
+        state.current_press_chorded = false;
+
+        if was_chorded {
+            state.last_tap = None;
+            return false;
+        }
+
         let now = Instant::now();
 
         if let Some(last_act) = state.last_activation {
@@ -71,19 +89,25 @@ fn evaluate_activation(state: &mut ActivationState, is_press: bool) -> bool {
             }
         }
 
-        if let Some(last) = state.last_trigger {
+        if let Some(last) = state.last_tap {
             if now.duration_since(last) < ACTIVATION_WINDOW {
-                state.last_trigger = None;
+                state.last_tap = None;
                 state.last_activation = Some(now);
                 return true;
             }
         }
-        state.last_trigger = Some(now);
-    } else if !is_press {
-        state.is_pressed = false;
+
+        state.last_tap = Some(now);
     }
 
     false
+}
+
+fn invalidate_activation_sequence(state: &mut ActivationState) {
+    state.last_tap = None;
+    if state.ctrl_is_down {
+        state.current_press_chorded = true;
+    }
 }
 
 // ─── Public Interface ───────────────────────────────────────────────────────────
@@ -183,15 +207,18 @@ unsafe extern "system" fn keyboard_hook_callback(
 
     if vk_code == VK_LCONTROL || vk_code == VK_RCONTROL {
         let is_release = wparam_val == 0x0101 || wparam_val == 0x0105;
-        let key_down = is_press && !is_release;
+        let is_ctrl_down = is_press && !is_release;
 
         let mut s = GLOBAL_ACTIVATION_STATE.lock().unwrap();
-        if evaluate_activation(&mut s, key_down) {
+        if evaluate_activation(&mut s, is_ctrl_down) {
             let cb = GLOBAL_ON_ACTIVATION.lock().unwrap();
             if let Some(ref callback) = *cb {
                 callback();
             }
         }
+    } else if is_press {
+        let mut s = GLOBAL_ACTIVATION_STATE.lock().unwrap();
+        invalidate_activation_sequence(&mut s);
     }
 
     unsafe { CallNextHookEx(None, code, w_param, l_param) }
@@ -352,8 +379,9 @@ mod tests {
     #[test]
     fn validates_activation_sequence() {
         let mut state = ActivationState {
-            last_trigger: None,
-            is_pressed: false,
+            last_tap: None,
+            ctrl_is_down: false,
+            current_press_chorded: false,
             last_activation: None,
         };
         assert!(!evaluate_activation(&mut state, true));
@@ -364,34 +392,89 @@ mod tests {
     #[test]
     fn rejects_stale_sequence() {
         let mut state = ActivationState {
-            last_trigger: None,
-            is_pressed: false,
+            last_tap: None,
+            ctrl_is_down: false,
+            current_press_chorded: false,
             last_activation: None,
         };
         evaluate_activation(&mut state, true);
         evaluate_activation(&mut state, false);
-        state.last_trigger = Some(Instant::now() - Duration::from_millis(500));
+        state.last_tap = Some(Instant::now() - Duration::from_millis(300));
         assert!(!evaluate_activation(&mut state, true));
+        assert!(!evaluate_activation(&mut state, false));
     }
 
     #[test]
-    fn boundary_timing_at_exactly_400ms_is_rejected() {
+    fn boundary_timing_at_exactly_250ms_is_rejected() {
         let mut state = ActivationState {
-            last_trigger: Some(Instant::now() - Duration::from_millis(400)),
-            is_pressed: false,
+            last_tap: Some(Instant::now() - Duration::from_millis(250)),
+            ctrl_is_down: false,
+            current_press_chorded: false,
             last_activation: None,
         };
         assert!(!evaluate_activation(&mut state, true));
+        assert!(!evaluate_activation(&mut state, false));
     }
 
     #[test]
     fn release_without_press_does_nothing() {
         let mut state = ActivationState {
-            last_trigger: None,
-            is_pressed: false,
+            last_tap: None,
+            ctrl_is_down: false,
+            current_press_chorded: false,
             last_activation: None,
         };
         assert!(!evaluate_activation(&mut state, false));
-        assert!(state.last_trigger.is_none());
+        assert!(state.last_tap.is_none());
+    }
+
+    #[test]
+    fn chorded_ctrl_press_does_not_count_as_activation_tap() {
+        let mut state = ActivationState {
+            last_tap: None,
+            ctrl_is_down: false,
+            current_press_chorded: false,
+            last_activation: None,
+        };
+
+        assert!(!evaluate_activation(&mut state, true));
+        invalidate_activation_sequence(&mut state);
+        assert!(!evaluate_activation(&mut state, false));
+        assert!(state.last_tap.is_none());
+        assert!(!evaluate_activation(&mut state, true));
+        assert!(!evaluate_activation(&mut state, false));
+    }
+
+    #[test]
+    fn non_ctrl_key_between_taps_clears_pending_sequence() {
+        let mut state = ActivationState {
+            last_tap: None,
+            ctrl_is_down: false,
+            current_press_chorded: false,
+            last_activation: None,
+        };
+
+        assert!(!evaluate_activation(&mut state, true));
+        assert!(!evaluate_activation(&mut state, false));
+        invalidate_activation_sequence(&mut state);
+        assert!(!evaluate_activation(&mut state, true));
+        assert!(!evaluate_activation(&mut state, false));
+    }
+
+    #[test]
+    fn activation_resets_state_for_next_toggle() {
+        let mut state = ActivationState {
+            last_tap: None,
+            ctrl_is_down: false,
+            current_press_chorded: false,
+            last_activation: None,
+        };
+
+        assert!(!evaluate_activation(&mut state, true));
+        assert!(!evaluate_activation(&mut state, false));
+        assert!(!evaluate_activation(&mut state, true));
+        assert!(evaluate_activation(&mut state, false));
+        assert!(!state.ctrl_is_down);
+        assert!(!state.current_press_chorded);
     }
 }

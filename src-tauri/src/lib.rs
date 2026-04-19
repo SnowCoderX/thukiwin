@@ -484,6 +484,13 @@ fn notify_overlay_hidden() {
     OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
 }
 
+/// Quits the application, matching the tray menu "Quit" action.
+#[tauri::command]
+fn quit_app(app_handle: tauri::AppHandle, generation: tauri::State<commands::GenerationState>) {
+    generation.cancel();
+    app_handle.exit(0);
+}
+
 /// Called by the frontend once its visibility event listener is registered.
 /// On the first call per process lifetime, shows the overlay so the AskBar
 /// appears automatically at startup without a race between the Rust emit and
@@ -938,6 +945,12 @@ pub fn run() {
                     let is_visible = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
                     let handle = app_handle.clone();
                     let handle2 = app_handle.clone();
+                    if is_visible {
+                        let _ = handle.run_on_main_thread(move || {
+                            toggle_overlay(&handle2, crate::context::ActivationContext::empty())
+                        });
+                        return;
+                    }
                     std::thread::spawn(move || {
                         let ctx = crate::context::capture_activation_context(is_visible);
                         let _ = handle.run_on_main_thread(move || toggle_overlay(&handle2, ctx));
@@ -1009,6 +1022,7 @@ pub fn run() {
             screenshot::capture_full_screen_command,
             notify_overlay_hidden,
             notify_frontend_ready,
+            quit_app,
             set_window_frame,
             finish_onboarding,
             // macOS-specific permission commands
@@ -1120,7 +1134,7 @@ mod tests {
 
     #[test]
     fn overlay_logical_dimensions() {
-        assert_eq!(OVERLAY_LOGICAL_WIDTH, 600.0);
+        assert_eq!(OVERLAY_LOGICAL_WIDTH, 900.0);
         assert_eq!(OVERLAY_LOGICAL_HEIGHT_COLLAPSED, 80.0);
     }
 }
