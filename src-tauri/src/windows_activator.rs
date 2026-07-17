@@ -386,7 +386,8 @@ mod tests {
         };
         assert!(!evaluate_activation(&mut state, true));
         evaluate_activation(&mut state, false);
-        assert!(evaluate_activation(&mut state, true));
+        assert!(!evaluate_activation(&mut state, true));
+        assert!(evaluate_activation(&mut state, false));
     }
 
     #[test]

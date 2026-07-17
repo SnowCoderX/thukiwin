@@ -13,6 +13,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { useOllama } from './hooks/useOllama';
 import type { Message } from './hooks/useOllama';
+import { useVoiceInput } from './hooks/useVoiceInput';
 import { useTts } from './hooks/useTts';
 import { useConversationHistory } from './hooks/useConversationHistory';
 import { ConversationView } from './view/ConversationView';
@@ -46,6 +47,11 @@ const ONBOARDING_EVENT = 'thuki://onboarding';
 const HIDE_COMMIT_DELAY_MS = 350;
 const CTRL_TAP_WINDOW_MS = 250;
 const CTRL_TAP_COOLDOWN_MS = 120;
+/** Удержание Ctrl дольше этого порога, без чорда с другой клавишей, запускает запись голоса. */
+const VOICE_HOLD_THRESHOLD_MS = 350;
+/** Записи короче этого порога отменяются целиком, без расшифровки, это защита от случайных Ctrl+что-то. */
+const MIN_VOICE_RECORDING_MS = 1000;
+const SAFE_MODE_STORAGE_KEY = 'thuki_safe_mode';
 
 /** Must match `OVERLAY_LOGICAL_WIDTH` in `src-tauri/src/lib.rs`. */
 const OVERLAY_WIDTH = 900;
@@ -163,6 +169,20 @@ function App() {
   const { messages, ask, cancel, isGenerating, reset, loadMessages } =
     useOllama(handleTurnComplete);
 
+  /**
+   * Расшифрованный кусок дописывается в поле ввода, ничего не отправляется
+   * автоматически, пользователь сам решает, когда и что отправить.
+   */
+  const {
+    status: voiceStatus,
+    toggle: toggleVoiceInput,
+    start: voiceStart,
+    stop: voiceStop,
+    cancel: voiceCancel,
+  } = useVoiceInput((text) => {
+    setQuery((prev) => (prev ? `${prev} ${text}` : text));
+  });
+
   const {
     speakingMessageId,
     speak: ttsSpeak,
@@ -199,6 +219,7 @@ function App() {
     context: string | undefined;
     think: boolean;
     promptOverride?: string;
+    safeMode: boolean;
   } | null>(null);
   /** True while waiting for images to finish processing before a deferred
    *  submit. Drives the "waiting" UI state in the ask bar. */
@@ -235,10 +256,19 @@ function App() {
   const [sessionId, setSessionId] = useState(0);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
   const [modelConfig, setModelConfig] = useState<ModelConfigState | null>(null);
+  const [safeMode, setSafeMode] = useState(() => {
+    const stored = localStorage.getItem(SAFE_MODE_STORAGE_KEY);
+    return stored !== 'off';
+  });
   const ctrlTapLastAtRef = useRef<number | null>(null);
   const ctrlTapLastActivationAtRef = useRef<number | null>(null);
   const ctrlTapDownRef = useRef(false);
   const ctrlTapChordedRef = useRef(false);
+  const voiceHoldTimerRef = useRef<number | null>(null);
+  const voiceRecordingActiveRef = useRef(false);
+  const voiceRecordingStartedAtRef = useRef(0);
+  /** Синхронная копия isBusy для чтения внутри keydown-обработчика без лишних пересозданий эффекта. */
+  const isBusyRef = useRef(false);
 
   const refreshModelConfig = useCallback(async () => {
     const config = await invoke<ModelConfigState>('get_model_config');
@@ -256,6 +286,14 @@ function App() {
     }
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem(SAFE_MODE_STORAGE_KEY, safeMode ? 'on' : 'off');
+  }, [safeMode]);
+
+  const handleSafeModeToggle = useCallback(() => {
+    setSafeMode((current) => !current);
+  }, []);
+
   /**
    * True when the window is near the screen bottom and should grow upward.
    * Flips the outer container to `justify-end` so content pins to the bottom.
@@ -268,6 +306,10 @@ function App() {
    * to chat-window mode are animated via Framer Motion `layout` prop.
    */
   const isChatMode = messages.length > 0 || isGenerating || isSubmitPending;
+
+  useEffect(() => {
+    isBusyRef.current = isGenerating || isSubmitPending;
+  }, [isGenerating, isSubmitPending]);
   const previousIsChatModeRef = useRef(isChatMode);
 
   /**
@@ -885,12 +927,17 @@ function App() {
 
   /** Fires the actual ask() call and cleans up attached images + input. */
   const executeSubmit = useCallback(
-    (submitQuery: string, context: string | undefined, think?: boolean) => {
+    (
+      submitQuery: string,
+      context: string | undefined,
+      think?: boolean,
+      submitSafeMode = true,
+    ) => {
       const readyPaths = attachedImages
         .filter((img) => img.filePath !== null)
         .map((img) => img.filePath as string);
       const images = readyPaths.length > 0 ? readyPaths : undefined;
-      ask(submitQuery, context, images, think);
+      ask(submitQuery, context, images, think, undefined, submitSafeMode);
       setSelectedContext(null);
       setQuery('');
       for (const img of attachedImages) {
@@ -910,7 +957,7 @@ function App() {
    * images and calls ask(). On error, restores the query so no input is lost.
    */
   const handleScreenSubmit = useCallback(
-    async (fullQuery: string, think?: boolean) => {
+    async (fullQuery: string, think?: boolean, submitSafeMode = true) => {
       // eslint-disable-next-line no-control-regex
       const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
       const sanitized = selectedContext
@@ -990,7 +1037,7 @@ function App() {
         .map((img) => img.filePath as string);
       readyPaths.push(screenshotPath);
 
-      ask(fullQuery, context, readyPaths, think);
+      ask(fullQuery, context, readyPaths, think, undefined, submitSafeMode);
       for (const img of attachedImages) {
         URL.revokeObjectURL(img.blobUrl);
       }
@@ -1034,7 +1081,7 @@ function App() {
 
     if (hasScreen) {
       // Fire-and-forget: the async path handles cleanup and ask() invocation.
-      void handleScreenSubmit(trimmedQuery, hasThink);
+      void handleScreenSubmit(trimmedQuery, hasThink, safeMode);
       return;
     }
 
@@ -1073,6 +1120,7 @@ function App() {
           images,
           hasThink || undefined,
           composedPrompt,
+          safeMode,
         );
         setSelectedContext(null);
         setQuery('');
@@ -1091,6 +1139,7 @@ function App() {
         context,
         think: hasThink,
         promptOverride: composedPrompt,
+        safeMode,
       };
       setIsSubmitPending(true);
       setPendingUserMessage({
@@ -1121,7 +1170,7 @@ function App() {
       (img) => img.filePath === null,
     );
     if (!hasPendingImages) {
-      executeSubmit(trimmedQuery, context, hasThink || undefined);
+      executeSubmit(trimmedQuery, context, hasThink || undefined, safeMode);
       return;
     }
 
@@ -1131,6 +1180,7 @@ function App() {
       query: trimmedQuery,
       context,
       think: hasThink,
+      safeMode,
     };
     setIsSubmitPending(true);
 
@@ -1156,6 +1206,7 @@ function App() {
     selectedContext,
     setSelectedContext,
     attachedImages,
+    safeMode,
     setCaptureError,
   ]);
 
@@ -1187,6 +1238,7 @@ function App() {
       context,
       think,
       promptOverride,
+      safeMode: pendingSafeMode,
     } = pendingSubmitRef.current;
     pendingSubmitRef.current = null;
     setIsSubmitPending(false);
@@ -1194,7 +1246,14 @@ function App() {
     setPendingUserMessage(null);
 
     const images = attachedImages.map((img) => img.filePath as string);
-    void ask(pendingQuery, context, images, think || undefined, promptOverride);
+    void ask(
+      pendingQuery,
+      context,
+      images,
+      think || undefined,
+      promptOverride,
+      pendingSafeMode,
+    );
     // Note: the display content in the pending bubble (set in handleSubmit)
     // already includes command triggers for visibility in the chat.
     setSelectedContext(null);
@@ -1332,9 +1391,24 @@ function App() {
         if (e.key === 'Control') {
           ctrlTapDownRef.current = true;
           ctrlTapChordedRef.current = false;
+
+          // Долгое удержание Ctrl (без чорда с другой клавишей) запускает
+          // голосовую запись. Таймер сам себя отменяет, если раньше придёт
+          // keyup (короткий тап) или чорд (обычный хоткей вроде Ctrl+C).
+          voiceHoldTimerRef.current = window.setTimeout(() => {
+            voiceHoldTimerRef.current = null;
+            if (ctrlTapChordedRef.current || isBusyRef.current) return;
+            voiceRecordingActiveRef.current = true;
+            voiceRecordingStartedAtRef.current = Date.now();
+            void voiceStart();
+          }, VOICE_HOLD_THRESHOLD_MS);
         } else if (ctrlTapDownRef.current) {
           ctrlTapChordedRef.current = true;
           ctrlTapLastAtRef.current = null;
+          if (voiceHoldTimerRef.current !== null) {
+            window.clearTimeout(voiceHoldTimerRef.current);
+            voiceHoldTimerRef.current = null;
+          }
         }
       }
 
@@ -1367,6 +1441,28 @@ function App() {
 
     const onKeyUp = (e: KeyboardEvent) => {
       if (overlayState !== 'visible' || e.key !== 'Control') return;
+
+      if (voiceHoldTimerRef.current !== null) {
+        window.clearTimeout(voiceHoldTimerRef.current);
+        voiceHoldTimerRef.current = null;
+      }
+
+      if (voiceRecordingActiveRef.current) {
+        voiceRecordingActiveRef.current = false;
+        const heldMs = Date.now() - voiceRecordingStartedAtRef.current;
+        // Отпустили Ctrl, который держали для записи — это не тап, гасим
+        // счётчик двойного нажатия, чтобы не закрыть окно тем же жестом.
+        ctrlTapDownRef.current = false;
+        ctrlTapChordedRef.current = false;
+        ctrlTapLastAtRef.current = null;
+        if (heldMs < MIN_VOICE_RECORDING_MS) {
+          void voiceCancel();
+        } else {
+          void voiceStop();
+        }
+        return;
+      }
+
       if (!ctrlTapDownRef.current) return;
 
       ctrlTapDownRef.current = false;
@@ -1411,6 +1507,9 @@ function App() {
     handleSave,
     handleHistoryToggle,
     handleCopyLastResponse,
+    voiceStart,
+    voiceStop,
+    voiceCancel,
   ]);
 
   /** Programmatic focus when the overlay becomes visible. */
@@ -1427,7 +1526,16 @@ function App() {
     ctrlTapLastActivationAtRef.current = null;
     ctrlTapDownRef.current = false;
     ctrlTapChordedRef.current = false;
-  }, [overlayState]);
+
+    if (voiceHoldTimerRef.current !== null) {
+      window.clearTimeout(voiceHoldTimerRef.current);
+      voiceHoldTimerRef.current = null;
+    }
+    if (voiceRecordingActiveRef.current) {
+      voiceRecordingActiveRef.current = false;
+      void voiceCancel();
+    }
+  }, [overlayState, voiceCancel]);
 
   /**
    * Commits the native window hide after a fixed deadline from the start of
@@ -1679,9 +1787,13 @@ function App() {
                   onImageRemove={handleImageRemove}
                   onImagePreview={handleAskBarImagePreview}
                   onScreenshot={handleScreenshot}
+                  onVoiceToggle={toggleVoiceInput}
+                  voiceStatus={voiceStatus}
                   availableModels={modelConfig?.all ?? [DEFAULT_MODEL_FALLBACK]}
                   activeModel={modelConfig?.active ?? DEFAULT_MODEL_FALLBACK}
                   onModelChange={handleModelChange}
+                  safeMode={safeMode}
+                  onSafeModeToggle={handleSafeModeToggle}
                   isDragOver={isDragOver ?? undefined}
                 />
               </div>

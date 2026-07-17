@@ -6,6 +6,7 @@ import { quote } from '../config';
 import { ImageThumbnails } from '../components/ImageThumbnails';
 import { CommandSuggestion } from '../components/CommandSuggestion';
 import { ModelSelector } from '../components/ModelSelector';
+import { AgentSafeToggle } from '../components/AgentSafeToggle';
 import { Tooltip } from '../components/Tooltip';
 import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
@@ -141,6 +142,26 @@ const CAMERA_ICON = (
   </svg>
 );
 
+/** Hoisted static microphone icon — toggles voice recording. */
+const MIC_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 16 16"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <rect x="6" y="1" width="4" height="8" rx="2" fill="currentColor" />
+    <path
+      d="M3 7v1a5 5 0 0 0 10 0V7M8 13v2"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
 /**
  * Renders text with command triggers highlighted in violet for the mirror div.
  * Only the first occurrence of each command is highlighted; duplicates render plain.
@@ -232,12 +253,20 @@ interface AskBarViewProps {
   onImagePreview: (id: string) => void;
   /** Called when the user clicks the screenshot capture button. */
   onScreenshot: () => void;
+  /** Called when the user taps the mic button (toggles recording). Optional — omit to hide voice input. */
+  onVoiceToggle?: () => void;
+  /** Current voice input status, drives the mic button's visual state. */
+  voiceStatus?: 'idle' | 'recording' | 'finishing' | 'error';
   /** All available Ollama model names for the model picker. */
   availableModels: string[];
   /** Currently active model name. */
   activeModel: string;
   /** Called when the user selects a different model. */
   onModelChange: (model: string) => void;
+  /** Whether safe mode is enabled for local agent tools. */
+  safeMode: boolean;
+  /** Called when the user toggles safe mode. */
+  onSafeModeToggle: () => void;
   /**
    * Drag state passed down from the root window handler.
    * "normal" = violet ring; "max" = red ring + label; undefined = no ring.
@@ -267,9 +296,13 @@ export function AskBarView({
   onImageRemove,
   onImagePreview,
   onScreenshot,
+  onVoiceToggle = () => {},
+  voiceStatus = 'idle',
   availableModels,
   activeModel,
   onModelChange,
+  safeMode,
+  onSafeModeToggle,
   isDragOver,
 }: AskBarViewProps) {
   /** Ref to the mirror div behind the textarea for command highlighting. */
@@ -620,6 +653,12 @@ export function AskBarView({
             disabled={isBusy}
           />
 
+          <AgentSafeToggle
+            safeMode={safeMode}
+            onToggle={onSafeModeToggle}
+            disabled={isBusy}
+          />
+
           <div className="relative flex-1 min-w-0">
             {/* Mirror div: renders the same text with highlighted commands.
                 Sits behind the transparent textarea so colored spans show through. */}
@@ -645,6 +684,30 @@ export function AskBarView({
               style={{ caretColor: 'var(--color-text-primary)' }}
             />
           </div>
+
+          <Tooltip
+            label={
+              voiceStatus === 'recording'
+                ? 'Stop recording'
+                : voiceStatus === 'finishing'
+                  ? 'Finishing...'
+                  : 'Voice input'
+            }
+          >
+            <button
+              type="button"
+              onClick={onVoiceToggle}
+              disabled={isBusy || voiceStatus === 'finishing'}
+              aria-label="Toggle voice input"
+              className={`shrink-0 w-7 h-7 flex items-center justify-center rounded-lg transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer ${
+                voiceStatus === 'recording'
+                  ? 'text-red-400 bg-red-500/10'
+                  : 'text-text-secondary hover:text-text-primary hover:bg-white/8'
+              }`}
+            >
+              {MIC_ICON}
+            </button>
+          </Tooltip>
 
           {isAtMaxImages ? (
             <Tooltip label="Maximum 3 images attached">

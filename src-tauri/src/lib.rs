@@ -19,9 +19,11 @@ pub mod commands;
 pub mod database;
 pub mod history;
 pub mod images;
+pub mod agent;
 pub mod onboarding;
 pub mod screenshot;
 pub mod tts;
+pub mod voice;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -966,6 +968,7 @@ pub fn run() {
             // ── Generation + conversation state ─────────────────────
             app.manage(commands::GenerationState::new());
             app.manage(commands::ConversationHistory::new());
+            app.manage(commands::AgentActionMemory::new());
             app.manage(commands::SystemPrompt(commands::load_system_prompt()));
             app.manage(commands::load_model_config());
 
@@ -980,6 +983,18 @@ pub fn run() {
             let db_conn = database::open_database(&app_data_dir)
                 .expect("failed to initialise SQLite database");
             app.manage(history::Database(std::sync::Mutex::new(db_conn)));
+
+            // ── Voice input (Whisper) ────────────────────────────────
+            let model_path = std::env::var("WHISPER_MODEL_PATH")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    app.path()
+                        .app_data_dir()
+                        .expect("failed to resolve app data directory")
+                        .join("models")
+                        .join("ggml-large-v3-turbo.bin")
+                });
+            app.manage(voice::VoiceState::new(model_path));
 
             // ── Orphaned image cleanup (startup + periodic) ─────────
             run_image_cleanup(app.handle());
@@ -1023,6 +1038,9 @@ pub fn run() {
             notify_overlay_hidden,
             notify_frontend_ready,
             quit_app,
+            voice::start_voice_recording,
+            voice::stop_voice_recording,
+            voice::cancel_voice_recording,
             set_window_frame,
             finish_onboarding,
             // macOS-specific permission commands

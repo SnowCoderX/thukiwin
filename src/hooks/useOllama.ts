@@ -3,6 +3,14 @@ import { invoke, Channel } from '@tauri-apps/api/core';
 
 /** Mirrors the Rust OllamaErrorKind enum sent over IPC. */
 export type OllamaErrorKind = 'NotRunning' | 'ModelNotFound' | 'Other';
+export type ToolEventStatus = 'running' | 'done' | 'error';
+
+export interface ToolEvent {
+  id: string;
+  name: string;
+  status: ToolEventStatus;
+  summary: string;
+}
 
 /**
  * Represents a single message in the chat thread.
@@ -20,6 +28,8 @@ export interface Message {
   errorKind?: OllamaErrorKind;
   /** Accumulated thinking/reasoning content from the model, if thinking mode was used. */
   thinkingContent?: string;
+  /** Tool activity emitted by the backend agent loop for this assistant turn. */
+  toolEvents?: ToolEvent[];
 }
 
 /**
@@ -30,11 +40,16 @@ export type StreamChunk =
   | { type: 'ThinkingToken'; data: string }
   | { type: 'Done' }
   | { type: 'Cancelled' }
+  | { type: 'ToolCallStarted'; data: Omit<ToolEvent, 'status'> }
+  | { type: 'ToolCallFinished'; data: Omit<ToolEvent, 'status'> }
+  | { type: 'ToolCallError'; data: Omit<ToolEvent, 'status'> }
   | { type: 'Error'; data: { kind: OllamaErrorKind; message: string } };
 
 /**
  * A custom hook that simplifies interactions with the local Ollama LLM.
  * It manages message history, streaming state, and sets up Rust IPC channels.
+ * Voice input lives separately in `useVoiceInput`, wired up in App.tsx where
+ * the input field state is, not here.
  *
  * @param onTurnComplete Optional callback invoked after a complete user/assistant
  *   turn (i.e., when the `Done` chunk is received). Receives the user message
@@ -71,6 +86,7 @@ export function useOllama(
       imagePaths?: string[],
       think?: boolean,
       promptOverride?: string,
+      safeMode = true,
     ) => {
       if (
         (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) ||
@@ -100,24 +116,44 @@ export function useOllama(
       const channel = new Channel<StreamChunk>();
       let currentContent = '';
       let currentThinkingContent = '';
+      let currentToolEvents: ToolEvent[] = [];
+
+      const updateAssistant = (updater: (message: Message) => Message) => {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantId ? updater(m) : m)),
+        );
+      };
 
       channel.onmessage = (chunk) => {
         if (chunk.type === 'ThinkingToken') {
           currentThinkingContent += chunk.data;
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? { ...m, thinkingContent: currentThinkingContent }
-                : m,
-            ),
-          );
+          updateAssistant((m) => ({
+            ...m,
+            thinkingContent: currentThinkingContent,
+          }));
         } else if (chunk.type === 'Token') {
           currentContent += chunk.data;
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId ? { ...m, content: currentContent } : m,
-            ),
-          );
+          updateAssistant((m) => ({ ...m, content: currentContent }));
+        } else if (chunk.type === 'ToolCallStarted') {
+          currentToolEvents = [
+            ...currentToolEvents,
+            { ...chunk.data, status: 'running' },
+          ];
+          updateAssistant((m) => ({ ...m, toolEvents: currentToolEvents }));
+        } else if (
+          chunk.type === 'ToolCallFinished' ||
+          chunk.type === 'ToolCallError'
+        ) {
+          const status = chunk.type === 'ToolCallFinished' ? 'done' : 'error';
+          const nextEvent = { ...chunk.data, status } as ToolEvent;
+          currentToolEvents = currentToolEvents.some(
+            (event) => event.id === chunk.data.id,
+          )
+            ? currentToolEvents.map((event) =>
+                event.id === chunk.data.id ? nextEvent : event,
+              )
+            : [...currentToolEvents, nextEvent];
+          updateAssistant((m) => ({ ...m, toolEvents: currentToolEvents }));
         } else if (chunk.type === 'Done') {
           setIsGenerating(false);
           // Notify the caller that a complete turn has finished so it can
@@ -126,6 +162,8 @@ export function useOllama(
             ...assistantMsg,
             content: currentContent,
             thinkingContent: currentThinkingContent || undefined,
+            toolEvents:
+              currentToolEvents.length > 0 ? currentToolEvents : undefined,
           });
         } else if (chunk.type === 'Cancelled') {
           // Remove the empty assistant placeholder if nothing was generated.
@@ -142,6 +180,10 @@ export function useOllama(
                     ...m,
                     content: chunk.data.message,
                     errorKind: chunk.data.kind,
+                    toolEvents:
+                      currentToolEvents.length > 0
+                        ? currentToolEvents
+                        : undefined,
                   }
                 : m,
             ),
@@ -156,6 +198,7 @@ export function useOllama(
           quotedText: quotedText ?? null,
           imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : null,
           think: think ?? false,
+          safeMode,
           onEvent: channel,
         });
       } catch {

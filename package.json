@@ -14,7 +14,7 @@
     "frontend:dev": "vite",
     "build:frontend": "tsc && vite build",
     "build:backend": "tauri build --bundles nsis",
-    "build:all": "bun run build:frontend && bun run build:backend",
+    "build:all": "bun run build:backend",
     "preview": "vite preview",
     "tauri": "tauri",
     "lint:frontend": "eslint src",

@@ -523,7 +523,7 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 100,
         y: 776,
-        width: 600,
+        width: 900,
         height: 108,
       });
     });
@@ -617,7 +617,7 @@ describe('App', () => {
       expect(invoke).toHaveBeenCalledWith('set_window_frame', {
         x: 100,
         y: 776,
-        width: 600,
+        width: 900,
         height: 108,
       });
     });
@@ -4069,7 +4069,7 @@ describe('App', () => {
   });
 
   describe('Minimize', () => {
-    it('calls getCurrentWindow().minimize() on minimize button click', async () => {
+    it('hides the overlay on minimize button click', async () => {
       render(<App />);
       await act(async () => {});
 
@@ -4097,7 +4097,7 @@ describe('App', () => {
       const minimizeBtn = screen.getByRole('button', { name: 'Minimize' });
       fireEvent.click(minimizeBtn);
 
-      expect(__mockWindow.minimize).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledWith('notify_overlay_hidden');
     });
   });
 

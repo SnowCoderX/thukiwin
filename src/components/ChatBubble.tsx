@@ -9,7 +9,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 import { COMMANDS, SCREEN_CAPTURE_PLACEHOLDER } from '../config/commands';
-import type { OllamaErrorKind } from '../hooks/useOllama';
+import type { OllamaErrorKind, ToolEvent } from '../hooks/useOllama';
 
 /**
  * Renders user message content with slash commands styled distinctly.
@@ -83,6 +83,8 @@ interface ChatBubbleProps {
   thinkingContent?: string;
   /** Whether the model is currently in the thinking phase (streaming thinking tokens). */
   isThinking?: boolean;
+  /** Structured tool activity for this assistant turn, if any. */
+  toolEvents?: ToolEvent[];
   /** Absolute file paths of images attached to this message, if any. */
   imagePaths?: string[];
   /** Called when the user clicks a thumbnail to preview it. */
@@ -141,6 +143,7 @@ export function ChatBubble({
   errorKind,
   thinkingContent,
   isThinking,
+  toolEvents,
   isSpeaking = false,
   onSpeak,
   onStopSpeaking,
@@ -222,6 +225,37 @@ export function ChatBubble({
                 thinkingContent={thinkingContent}
                 isThinking={isThinking ?? false}
               />
+            )}
+            {toolEvents && toolEvents.length > 0 && (
+              <div className="mb-3 rounded-lg border border-surface-border bg-surface-elevated/80 px-3 py-2">
+                <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.14em] text-text-secondary">
+                  Agent activity
+                </p>
+                <div className="flex flex-col gap-1.5">
+                  {toolEvents.map((event) => (
+                    <div
+                      key={event.id}
+                      className="flex items-start gap-2 text-xs leading-relaxed"
+                    >
+                      <span
+                        className={`mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full ${
+                          event.status === 'running'
+                            ? 'bg-amber-300'
+                            : event.status === 'done'
+                              ? 'bg-emerald-300'
+                              : 'bg-red-300'
+                        }`}
+                      />
+                      <div className="min-w-0">
+                        <p className="font-medium text-text-primary">
+                          {event.name}
+                        </p>
+                        <p className="text-text-secondary">{event.summary}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
             {errorKind ? (
               <ErrorCard kind={errorKind} message={content} />

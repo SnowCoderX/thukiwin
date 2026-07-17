@@ -1,7 +1,10 @@
 use std::collections::HashSet;
+#[cfg(test)]
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use crate::agent;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, State};
@@ -99,8 +102,22 @@ pub enum StreamChunk {
     Done,
     /// The user explicitly cancelled generation.
     Cancelled,
+    /// An agent tool call started.
+    ToolCallStarted(ToolCallEvent),
+    /// An agent tool call completed successfully.
+    ToolCallFinished(ToolCallEvent),
+    /// An agent tool call failed.
+    ToolCallError(ToolCallEvent),
     /// A structured, user-friendly error occurred during processing.
     Error(OllamaError),
+}
+
+/// Structured tool activity event emitted to the frontend.
+#[derive(Clone, Serialize, PartialEq, Debug)]
+pub struct ToolCallEvent {
+    pub id: String,
+    pub name: String,
+    pub summary: String,
 }
 
 /// A single message in the Ollama `/api/chat` conversation format.
@@ -148,6 +165,81 @@ struct OllamaChatResponse {
     done: Option<bool>,
 }
 
+/// Message format used for the non-stream agent/tool loop.
+#[derive(Clone, Serialize)]
+struct AgentChatMessage {
+    role: String,
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OllamaToolCall>>,
+}
+
+impl From<ChatMessage> for AgentChatMessage {
+    fn from(value: ChatMessage) -> Self {
+        Self {
+            role: value.role,
+            content: value.content,
+            images: value.images,
+            tool_calls: None,
+        }
+    }
+}
+
+impl From<AgentChatMessage> for ChatMessage {
+    fn from(value: AgentChatMessage) -> Self {
+        Self {
+            role: value.role,
+            content: value.content,
+            images: value.images,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct OllamaToolCall {
+    function: OllamaToolFunctionCall,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct OllamaToolFunctionCall {
+    name: String,
+    arguments: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct OllamaAgentRequest {
+    model: String,
+    messages: Vec<AgentChatMessage>,
+    stream: bool,
+    think: bool,
+    options: OllamaOptions,
+    tools: Vec<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct OllamaAgentResponseMessage {
+    content: Option<String>,
+    thinking: Option<String>,
+    tool_calls: Option<Vec<OllamaToolCall>>,
+}
+
+#[derive(Deserialize)]
+struct OllamaAgentResponse {
+    message: Option<OllamaAgentResponseMessage>,
+}
+
+enum AgentStepError {
+    Stream(StreamChunk),
+    FallbackToPlainChat,
+}
+
+enum AgentRunError {
+    AlreadyHandled,
+    FallbackToPlainChat,
+}
+
 /// Single model entry returned by Ollama `/api/tags`.
 #[derive(Deserialize)]
 struct OllamaTagModel {
@@ -158,6 +250,32 @@ struct OllamaTagModel {
 #[derive(Deserialize)]
 struct OllamaTagsResponse {
     models: Vec<OllamaTagModel>,
+}
+
+#[cfg(test)]
+#[derive(Deserialize)]
+struct WttrResponse {
+    current_condition: Vec<WttrCurrentCondition>,
+}
+
+#[cfg(test)]
+#[derive(Deserialize)]
+struct WttrCurrentCondition {
+    #[serde(rename = "temp_C")]
+    temp_c: String,
+    #[serde(rename = "FeelsLikeC")]
+    feels_like_c: String,
+    humidity: String,
+    #[serde(rename = "windspeedKmph")]
+    windspeed_kmph: String,
+    #[serde(rename = "weatherDesc")]
+    weather_desc: Vec<WttrValue>,
+}
+
+#[cfg(test)]
+#[derive(Deserialize)]
+struct WttrValue {
+    value: String,
 }
 
 /// Holds the active cancellation token for the current generation request.
@@ -216,6 +334,50 @@ impl ConversationHistory {
     /// Creates a new empty conversation history at epoch 0.
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+/// Small backend memory for deterministic follow-up actions like
+/// "open it again" after the agent created or opened a file.
+#[derive(Default)]
+pub struct AgentActionMemory {
+    last_created_file: Mutex<Option<String>>,
+    last_open_target: Mutex<Option<String>>,
+}
+
+impl AgentActionMemory {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn remember_tool_success(&self, name: &str, result: &str) {
+        match name {
+            "create_text_file" => {
+                if let Some(path) = extract_result_field(result, "Path: ") {
+                    *self.last_created_file.lock().unwrap() = Some(path.clone());
+                    *self.last_open_target.lock().unwrap() = Some(path);
+                }
+            }
+            "open_item" => {
+                if let Some(target) = extract_result_field(result, "Target: ") {
+                    *self.last_open_target.lock().unwrap() = Some(target);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn preferred_reopen_target(&self) -> Option<String> {
+        self.last_open_target
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| self.last_created_file.lock().unwrap().clone())
+    }
+
+    fn clear(&self) {
+        *self.last_created_file.lock().unwrap() = None;
+        *self.last_open_target.lock().unwrap() = None;
     }
 }
 
@@ -388,11 +550,7 @@ pub async fn stream_ollama_chat(
         messages,
         stream: true,
         think,
-        options: OllamaOptions {
-            temperature: 1.0,
-            top_p: 0.95,
-            top_k: 64,
-        },
+        options: default_sampling_options(),
     };
 
     let mut accumulated = String::new();
@@ -478,6 +636,577 @@ pub async fn stream_ollama_chat(
     accumulated
 }
 
+fn default_sampling_options() -> OllamaOptions {
+    OllamaOptions {
+        temperature: 1.0,
+        top_p: 0.95,
+        top_k: 64,
+    }
+}
+
+fn extract_result_field(result: &str, prefix: &str) -> Option<String> {
+    result
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix).map(|value| value.trim().to_string()))
+        .filter(|value| !value.is_empty())
+}
+
+fn emit_replayed_text(text: &str, on_chunk: &impl Fn(StreamChunk), thinking: bool) {
+    for chunk in text.split_inclusive(char::is_whitespace) {
+        if chunk.is_empty() {
+            continue;
+        }
+        if thinking {
+            on_chunk(StreamChunk::ThinkingToken(chunk.to_string()));
+        } else {
+            on_chunk(StreamChunk::Token(chunk.to_string()));
+        }
+    }
+}
+
+fn message_prefers_russian(message: &str) -> bool {
+    message
+        .chars()
+        .any(|ch| ('\u{0400}'..='\u{04FF}').contains(&ch))
+}
+
+#[cfg(test)]
+fn is_local_time_query(message: &str, quoted_text: Option<&str>, has_images: bool) -> bool {
+    if quoted_text.is_some() || has_images {
+        return false;
+    }
+
+    let normalized = message.trim().to_lowercase();
+    [
+        "сколько время",
+        "который час",
+        "время на моем пк",
+        "время на моём пк",
+        "время на компьютере",
+        "time on my pc",
+        "what time is it",
+        "current time",
+        "local time",
+    ]
+    .iter()
+    .any(|pattern| normalized.contains(pattern))
+}
+
+fn is_reopen_followup_query(message: &str, quoted_text: Option<&str>, has_images: bool) -> bool {
+    if quoted_text.is_some() || has_images {
+        return false;
+    }
+
+    let normalized = message.trim().to_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    let asks_to_open = normalized.contains("открой")
+        || normalized.contains("открывай")
+        || normalized.contains("open")
+        || normalized.contains("launch");
+    if !asks_to_open {
+        return false;
+    }
+
+    normalized.contains("еще раз")
+        || normalized.contains("снова")
+        || normalized.contains("ещё раз")
+        || normalized.contains("его")
+        || normalized.contains("её")
+        || normalized.contains("этот файл")
+        || normalized.contains("этот")
+        || normalized.contains("that file")
+        || normalized.contains("this file")
+        || normalized.contains("it")
+        || normalized.contains("again")
+        || normalized.contains("блокнот")
+        || normalized.contains("notepad")
+}
+
+#[cfg(test)]
+fn extract_google_search_query(
+    message: &str,
+    quoted_text: Option<&str>,
+    has_images: bool,
+) -> Option<String> {
+    if quoted_text.is_some() || has_images {
+        return None;
+    }
+
+    let trimmed = message.trim();
+    let lower = trimmed.to_lowercase();
+
+    if let Some(rest) = trimmed.strip_prefix("загугли ") {
+        return Some(rest.trim().to_string()).filter(|q| !q.is_empty());
+    }
+    if let Some(rest) = trimmed.strip_prefix("гугли ") {
+        return Some(rest.trim().to_string()).filter(|q| !q.is_empty());
+    }
+    if let Some(rest) = lower.strip_prefix("google ") {
+        return Some(trimmed[trimmed.len() - rest.len()..].trim().to_string())
+            .filter(|q| !q.is_empty());
+    }
+    if let Some(rest) = lower.strip_prefix("search google for ") {
+        return Some(trimmed[trimmed.len() - rest.len()..].trim().to_string())
+            .filter(|q| !q.is_empty());
+    }
+
+    None
+}
+
+#[cfg(test)]
+fn extract_weather_search_query(
+    message: &str,
+    quoted_text: Option<&str>,
+    has_images: bool,
+) -> Option<String> {
+    if quoted_text.is_some() || has_images {
+        return None;
+    }
+
+    let trimmed = message.trim();
+    let lower = trimmed.to_lowercase();
+    let looks_like_weather = lower.contains("погод")
+        || lower.contains("температур")
+        || lower.contains("weather")
+        || lower.contains("forecast");
+
+    if !looks_like_weather {
+        return None;
+    }
+
+    Some(trimmed.to_string()).filter(|query| !query.is_empty())
+}
+
+#[cfg(test)]
+fn extract_weather_location(query: &str) -> String {
+    let trimmed = query
+        .trim()
+        .trim_end_matches(['?', '!', '.', ',', ';', ':'])
+        .trim();
+    let lower = trimmed.to_lowercase();
+
+    for marker in [" в ", " in "] {
+        if let Some(index) = lower.rfind(marker) {
+            let candidate = trimmed[index + marker.len()..].trim();
+            let candidate = candidate
+                .trim_end_matches(['?', '!', '.', ',', ';', ':'])
+                .trim();
+            let candidate_lower = candidate.to_lowercase();
+            let candidate_lower = candidate_lower
+                .replace("на сегодня", "")
+                .replace("сегодня", "")
+                .replace("прямо сейчас", "")
+                .replace("сейчас", "")
+                .replace("щас", "")
+                .replace("today", "")
+                .replace("now", "");
+            let cleaned = candidate_lower.trim().to_string();
+            if !cleaned.is_empty() {
+                return cleaned;
+            }
+        }
+    }
+
+    trimmed.to_string()
+}
+
+#[cfg(test)]
+fn build_google_search_url(query: &str) -> String {
+    let query = query.trim().replace(' ', "+");
+    format!("https://www.google.com/search?q={query}")
+}
+
+fn format_reopen_response(message: &str, target: &str) -> String {
+    if message_prefers_russian(message) {
+        format!("Отправил запрос на открытие: {target}.")
+    } else {
+        format!("Sent a launch request for: {target}.")
+    }
+}
+
+#[cfg(test)]
+fn format_google_search_response(message: &str, query: &str) -> String {
+    if message_prefers_russian(message) {
+        format!("Отправил запрос на поиск в браузере: {query}.")
+    } else {
+        format!("Sent a browser search request for: {query}.")
+    }
+}
+
+fn format_open_item_final_message(
+    prefer_russian: bool,
+    created_path: Option<&str>,
+    target: Option<&str>,
+    method: Option<&str>,
+) -> String {
+    let mut lines = Vec::new();
+    if let Some(path) = created_path {
+        if prefer_russian {
+            lines.push(format!("Файл создан: {path}."));
+        } else {
+            lines.push(format!("File created: {path}."));
+        }
+    }
+
+    let target = target.unwrap_or_default();
+    let method_suffix = method
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if prefer_russian {
+                format!(" Метод: {value}.")
+            } else {
+                format!(" Method: {value}.")
+            }
+        })
+        .unwrap_or_default();
+
+    if prefer_russian {
+        lines.push(format!(
+            "Отправлен запрос на открытие: {target}.{method_suffix}"
+        ));
+    } else {
+        lines.push(format!(
+            "Sent a launch request for: {target}.{method_suffix}"
+        ));
+    }
+
+    lines.join("\n")
+}
+
+#[cfg(test)]
+async fn fetch_current_weather(client: &reqwest::Client, query: &str) -> Result<String, String> {
+    let location = extract_weather_location(query);
+    let mut url = reqwest::Url::parse("https://wttr.in/").map_err(|e| e.to_string())?;
+    url.set_path(&location);
+    url.query_pairs_mut()
+        .append_pair("format", "j1")
+        .append_pair("lang", "ru");
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Could not fetch weather: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Could not fetch weather: HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+
+    let payload = response
+        .json::<WttrResponse>()
+        .await
+        .map_err(|e| format!("Could not parse weather response: {e}"))?;
+
+    let current = payload
+        .current_condition
+        .first()
+        .ok_or_else(|| "Weather service returned no current conditions.".to_string())?;
+    let description = current
+        .weather_desc
+        .first()
+        .map(|value| value.value.clone())
+        .unwrap_or_else(|| "no description".to_string());
+
+    Ok(format!(
+        "{}\nTemperature: {} C\nFeels like: {} C\nHumidity: {}%\nWind: {} km/h\nSource: wttr.in",
+        description,
+        current.temp_c,
+        current.feels_like_c,
+        current.humidity,
+        current.windspeed_kmph
+    ))
+}
+
+#[cfg(test)]
+fn format_weather_response(message: &str, location: &str, weather_summary: &str) -> String {
+    let lines = weather_summary.lines().collect::<Vec<_>>();
+    let description = lines.first().copied().unwrap_or("Unknown weather");
+    let temperature = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("Temperature: "))
+        .unwrap_or("?");
+    let feels_like = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("Feels like: "))
+        .unwrap_or("?");
+    let humidity = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("Humidity: "))
+        .unwrap_or("?");
+    let wind = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("Wind: "))
+        .unwrap_or("?");
+
+    if message_prefers_russian(message) {
+        format!(
+            "Сейчас в {location}: {description}. Температура {temperature}, ощущается как {feels_like}, влажность {humidity}, ветер {wind}. Источник: wttr.in."
+        )
+    } else {
+        format!(
+            "Current weather in {location}: {description}. Temperature {temperature}, feels like {feels_like}, humidity {humidity}, wind {wind}. Source: wttr.in."
+        )
+    }
+}
+
+#[cfg(test)]
+fn get_local_time_hhmm() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", "Get-Date -Format HH:mm"])
+            .output()
+            .map_err(|e| format!("Could not read local time: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if stderr.is_empty() {
+                "Could not read local time.".to_string()
+            } else {
+                format!("Could not read local time: {stderr}")
+            });
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            Err("Could not read local time.".to_string())
+        } else {
+            Ok(stdout)
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Local time lookup is only implemented for Windows in this build.".to_string())
+    }
+}
+
+#[cfg(test)]
+fn format_local_time_response(message: &str, hhmm: &str) -> String {
+    let has_cyrillic = message.chars().any(|c| ('\u{0400}'..='\u{04FF}').contains(&c));
+    if has_cyrillic {
+        format!("Сейчас на вашем ПК {hhmm}.")
+    } else {
+        format!("Your PC time is {hhmm}.")
+    }
+}
+
+async fn request_ollama_agent_step(
+    endpoint: &str,
+    model: &str,
+    messages: Vec<AgentChatMessage>,
+    think: bool,
+    client: &reqwest::Client,
+    cancel_token: &CancellationToken,
+) -> Result<OllamaAgentResponseMessage, AgentStepError> {
+    let request_payload = OllamaAgentRequest {
+        model: model.to_string(),
+        messages,
+        stream: false,
+        think,
+        options: default_sampling_options(),
+        tools: agent::tool_definitions(),
+    };
+
+    let response = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            return Err(AgentStepError::Stream(StreamChunk::Cancelled));
+        }
+        response = client.post(endpoint).json(&request_payload).send() => response
+    };
+
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => return Err(AgentStepError::Stream(StreamChunk::Error(classify_stream_error(&error)))),
+    };
+
+    if !response.status().is_success() {
+        if response.status().as_u16() == 400 {
+            return Err(AgentStepError::FallbackToPlainChat);
+        }
+        return Err(AgentStepError::Stream(StreamChunk::Error(classify_http_error(
+            response.status().as_u16(),
+            model,
+        ))));
+    }
+
+    let payload = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            return Err(AgentStepError::Stream(StreamChunk::Cancelled));
+        }
+        payload = response.json::<OllamaAgentResponse>() => payload
+    };
+
+    let payload = match payload {
+        Ok(payload) => payload,
+        Err(error) => return Err(AgentStepError::Stream(StreamChunk::Error(classify_stream_error(&error)))),
+    };
+
+    payload.message.ok_or_else(|| {
+        AgentStepError::Stream(StreamChunk::Error(OllamaError {
+            kind: OllamaErrorKind::Other,
+            message: "Something went wrong\nOllama returned an empty response.".to_string(),
+        }))
+    })
+}
+
+fn plain_messages_from_agent_messages(messages: Vec<AgentChatMessage>) -> Vec<ChatMessage> {
+    messages
+        .into_iter()
+        .filter(|message| message.role != "tool")
+        .map(|message| ChatMessage::from(AgentChatMessage {
+            role: message.role,
+            content: message.content,
+            images: message.images,
+            tool_calls: None,
+        }))
+        .collect()
+}
+
+async fn run_agent_chat(
+    endpoint: &str,
+    model: &str,
+    messages: Vec<AgentChatMessage>,
+    think: bool,
+    safe_mode: bool,
+    prefer_russian: bool,
+    action_memory: &AgentActionMemory,
+    client: &reqwest::Client,
+    cancel_token: CancellationToken,
+    on_chunk: impl Fn(StreamChunk),
+) -> Result<String, AgentRunError> {
+    const MAX_AGENT_STEPS: usize = 12;
+
+    let mut agent_messages = messages;
+    let mut tool_sequence = 0usize;
+    let mut saw_open_item = false;
+    let mut latest_open_target = None::<String>;
+    let mut latest_open_method = None::<String>;
+    let mut latest_created_path = None::<String>;
+    for _ in 0..MAX_AGENT_STEPS {
+        let response = match request_ollama_agent_step(
+            endpoint,
+            model,
+            agent_messages.clone(),
+            think,
+            client,
+            &cancel_token,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(AgentStepError::FallbackToPlainChat) if tool_sequence == 0 => {
+                return Err(AgentRunError::FallbackToPlainChat);
+            }
+            Err(AgentStepError::Stream(chunk)) => {
+                on_chunk(chunk);
+                return Err(AgentRunError::AlreadyHandled);
+            }
+            Err(AgentStepError::FallbackToPlainChat) => {
+                on_chunk(StreamChunk::Error(OllamaError {
+                    kind: OllamaErrorKind::Other,
+                    message: "Something went wrong\nThis model rejected the agent tool request.".to_string(),
+                }));
+                return Err(AgentRunError::AlreadyHandled);
+            }
+        };
+
+        let assistant_content = response.content.unwrap_or_default();
+        let assistant_thinking = response.thinking.unwrap_or_default();
+        let tool_calls = response.tool_calls.unwrap_or_default();
+
+        if tool_calls.is_empty() {
+            if saw_open_item {
+                let final_message = format_open_item_final_message(
+                    prefer_russian,
+                    latest_created_path.as_deref(),
+                    latest_open_target.as_deref(),
+                    latest_open_method.as_deref(),
+                );
+                emit_replayed_text(&final_message, &on_chunk, false);
+                on_chunk(StreamChunk::Done);
+                return Ok(final_message);
+            }
+            if !assistant_thinking.is_empty() {
+                emit_replayed_text(&assistant_thinking, &on_chunk, true);
+            }
+            if !assistant_content.is_empty() {
+                emit_replayed_text(&assistant_content, &on_chunk, false);
+            }
+            on_chunk(StreamChunk::Done);
+            return Ok(assistant_content);
+        }
+
+        agent_messages.push(AgentChatMessage {
+            role: "assistant".to_string(),
+            content: assistant_content,
+            images: None,
+            tool_calls: Some(tool_calls.clone()),
+        });
+
+        for tool_call in tool_calls {
+            tool_sequence += 1;
+            let tool_id = format!("tool-{tool_sequence}");
+            let tool_name = tool_call.function.name.clone();
+            let tool_args = tool_call.function.arguments.clone();
+            on_chunk(StreamChunk::ToolCallStarted(ToolCallEvent {
+                id: tool_id.clone(),
+                name: tool_name.clone(),
+                summary: agent::summarize_tool_args(&tool_name, &tool_args),
+            }));
+
+            let tool_result = match agent::execute_tool_call(&tool_name, tool_args, safe_mode, client).await {
+                Ok(result) => {
+                    action_memory.remember_tool_success(&tool_name, &result);
+                    if tool_name == "create_text_file" {
+                        latest_created_path = extract_result_field(&result, "Path: ");
+                    }
+                    if tool_name == "open_item" {
+                        saw_open_item = true;
+                        latest_open_target = extract_result_field(&result, "Target: ");
+                        latest_open_method = extract_result_field(&result, "Method: ");
+                    }
+                    on_chunk(StreamChunk::ToolCallFinished(ToolCallEvent {
+                        id: tool_id.clone(),
+                        name: tool_name.clone(),
+                        summary: agent::summarize_tool_result(&result),
+                    }));
+                    result
+                }
+                Err(error) => {
+                    on_chunk(StreamChunk::ToolCallError(ToolCallEvent {
+                        id: tool_id.clone(),
+                        name: tool_name.clone(),
+                        summary: agent::summarize_tool_result(&error),
+                    }));
+                    format!("Tool error: {error}")
+                }
+            };
+
+            agent_messages.push(AgentChatMessage {
+                role: "tool".to_string(),
+                content: tool_result,
+                images: None,
+                tool_calls: None,
+            });
+        }
+    }
+
+    on_chunk(StreamChunk::Error(OllamaError {
+        kind: OllamaErrorKind::Other,
+        message: "Something went wrong\nThe agent hit its tool-step limit.".to_string(),
+    }));
+    Err(AgentRunError::AlreadyHandled)
+}
+
 /// Streams a chat response from the local Ollama backend. Appends the user
 /// message and assistant response to conversation history after completion
 /// or cancellation (retaining context for follow-up requests). Uses an epoch
@@ -490,10 +1219,12 @@ pub async fn ask_ollama(
     quoted_text: Option<String>,
     image_paths: Option<Vec<String>>,
     think: bool,
+    safe_mode: bool,
     on_event: Channel<StreamChunk>,
     client: State<'_, OllamaHttpClient>,
     generation: State<'_, GenerationState>,
     history: State<'_, ConversationHistory>,
+    action_memory: State<'_, AgentActionMemory>,
     system_prompt: State<'_, SystemPrompt>,
     model_config: State<'_, ModelConfig>,
 ) -> Result<(), String> {
@@ -509,7 +1240,7 @@ pub async fn ask_ollama(
         Some(ref qt) if !qt.trim().is_empty() => {
             format!("[Highlighted Text]\n\"{}\"\n\n[Request]\n{}", qt, message)
         }
-        _ => message,
+        _ => message.clone(),
     };
 
     // Base64-encode attached images for the Ollama multimodal API.
@@ -526,6 +1257,57 @@ pub async fn ask_ollama(
         images,
     };
 
+    if is_reopen_followup_query(
+        &message,
+        quoted_text.as_deref(),
+        image_paths.as_ref().is_some_and(|paths| !paths.is_empty()),
+    ) {
+        if let Some(target) = action_memory.preferred_reopen_target() {
+            let tool_id = "tool-direct-open".to_string();
+            let tool_args = serde_json::json!({ "target": target });
+            let _ = on_event.send(StreamChunk::ToolCallStarted(ToolCallEvent {
+                id: tool_id.clone(),
+                name: "open_item".to_string(),
+                summary: agent::summarize_tool_args("open_item", &tool_args),
+            }));
+            match agent::execute_tool_call("open_item", tool_args, safe_mode, &client.0).await {
+                Ok(result) => {
+                    action_memory.remember_tool_success("open_item", &result);
+                    let _ = on_event.send(StreamChunk::ToolCallFinished(ToolCallEvent {
+                        id: tool_id,
+                        name: "open_item".to_string(),
+                        summary: agent::summarize_tool_result(&result),
+                    }));
+                    let reply = format_reopen_response(
+                        &message,
+                        &extract_result_field(&result, "Target: ").unwrap_or(result),
+                    );
+                    let _ = on_event.send(StreamChunk::Token(reply.clone()));
+                    let _ = on_event.send(StreamChunk::Done);
+                    let epoch_at_start = history.epoch.load(Ordering::SeqCst);
+                    if history.epoch.load(Ordering::SeqCst) == epoch_at_start {
+                        let mut conv = history.messages.lock().unwrap();
+                        conv.push(user_msg);
+                        conv.push(ChatMessage {
+                            role: "assistant".to_string(),
+                            content: reply,
+                            images: None,
+                        });
+                    }
+                    generation.clear();
+                    return Ok(());
+                }
+                Err(error) => {
+                    let _ = on_event.send(StreamChunk::ToolCallError(ToolCallEvent {
+                        id: tool_id,
+                        name: "open_item".to_string(),
+                        summary: agent::summarize_tool_result(&error),
+                    }));
+                }
+            }
+        }
+    }
+
     // Snapshot the current epoch and build the messages array for Ollama.
     // The user message is NOT yet committed to history — it is only added
     // after a response (including partial/cancelled) to prevent orphaned
@@ -533,28 +1315,50 @@ pub async fn ask_ollama(
     let (epoch_at_start, messages) = {
         let conv = history.messages.lock().unwrap();
         let epoch = history.epoch.load(Ordering::SeqCst);
-        let mut msgs = vec![ChatMessage {
+        let mut msgs = vec![AgentChatMessage {
             role: "system".to_string(),
-            content: system_prompt.0.clone(),
+            content: format!("{}\n\n{}", system_prompt.0, agent::tool_system_prompt(safe_mode)),
             images: None,
+            tool_calls: None,
         }];
-        msgs.extend(conv.clone());
-        msgs.push(user_msg.clone());
+        msgs.extend(conv.clone().into_iter().map(AgentChatMessage::from));
+        msgs.push(AgentChatMessage::from(user_msg.clone()));
         (epoch, msgs)
     };
 
-    let accumulated = stream_ollama_chat(
+    let accumulated = match run_agent_chat(
         &endpoint,
         &active_model,
-        messages,
+        messages.clone(),
         think,
+        safe_mode,
+        message_prefers_russian(&message),
+        &action_memory,
         &client.0,
         cancel_token.clone(),
         |chunk| {
             let _ = on_event.send(chunk);
         },
     )
-    .await;
+    .await {
+        Ok(accumulated) => accumulated,
+        Err(AgentRunError::FallbackToPlainChat) => {
+            let plain_messages = plain_messages_from_agent_messages(messages);
+            stream_ollama_chat(
+                &endpoint,
+                &active_model,
+                plain_messages,
+                think,
+                &client.0,
+                cancel_token.clone(),
+                |chunk| {
+                    let _ = on_event.send(chunk);
+                },
+            )
+            .await
+        }
+        Err(AgentRunError::AlreadyHandled) => String::new(),
+    };
 
     // Persist user + assistant messages to in-memory history when the epoch
     // has not changed (no reset during streaming) and we received content.
@@ -595,9 +1399,13 @@ pub async fn cancel_generation(generation: State<'_, GenerationState>) -> Result
 /// messages into the freshly cleared history.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[cfg_attr(not(coverage), tauri::command)]
-pub fn reset_conversation(history: State<'_, ConversationHistory>) {
+pub fn reset_conversation(
+    history: State<'_, ConversationHistory>,
+    action_memory: State<'_, AgentActionMemory>,
+) {
     history.epoch.fetch_add(1, Ordering::SeqCst);
     history.messages.lock().unwrap().clear();
+    action_memory.clear();
 }
 
 #[cfg(test)]
@@ -1503,12 +2311,118 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn agent_step_400_triggers_plain_chat_fallback() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .with_status(400)
+            .with_body("model does not support tools")
+            .create_async()
+            .await;
+
+        let client = test_client();
+        let token = CancellationToken::new();
+        let result = request_ollama_agent_step(
+            &format!("{}/api/chat", server.url()),
+            "test-model",
+            vec![AgentChatMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+                images: None,
+                tool_calls: None,
+            }],
+            false,
+            &client,
+            &token,
+        )
+        .await;
+
+        mock.assert_async().await;
+        assert!(matches!(result, Err(AgentStepError::FallbackToPlainChat)));
+    }
+
+    #[test]
+    fn plain_messages_strip_tool_role_and_tool_calls() {
+        let plain = plain_messages_from_agent_messages(vec![
+            AgentChatMessage {
+                role: "assistant".to_string(),
+                content: "hello".to_string(),
+                images: None,
+                tool_calls: Some(vec![OllamaToolCall {
+                    function: OllamaToolFunctionCall {
+                        name: "open_item".to_string(),
+                        arguments: serde_json::json!({ "target": "notepad" }),
+                    },
+                }]),
+            },
+            AgentChatMessage {
+                role: "tool".to_string(),
+                content: "opened".to_string(),
+                images: None,
+                tool_calls: None,
+            },
+        ]);
+
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].role, "assistant");
+        assert_eq!(plain[0].content, "hello");
+    }
+
     #[test]
     fn thinking_token_serializes_correctly() {
         let chunk = StreamChunk::ThinkingToken("reasoning step".to_string());
         let json = serde_json::to_value(&chunk).unwrap();
         assert_eq!(json["type"], "ThinkingToken");
         assert_eq!(json["data"], "reasoning step");
+    }
+
+    #[test]
+    fn detects_local_time_queries() {
+        assert!(is_local_time_query("сколько время на моем пк щас?", None, false));
+        assert!(is_local_time_query("what time is it on my pc?", None, false));
+        assert!(!is_local_time_query("how much time will this take?", None, false));
+        assert!(!is_local_time_query("сколько время", Some("quoted"), false));
+    }
+
+    #[test]
+    fn formats_local_time_response_by_language() {
+        assert_eq!(
+            format_local_time_response("сколько время?", "10:52"),
+            "Сейчас на вашем ПК 10:52."
+        );
+        assert_eq!(
+            format_local_time_response("what time is it?", "10:52"),
+            "Your PC time is 10:52."
+        );
+    }
+
+    #[test]
+    fn detects_reopen_followup_queries() {
+        assert!(is_reopen_followup_query("открой еще раз его", None, false));
+        assert!(is_reopen_followup_query(
+            "just open this file in notepad",
+            None,
+            false
+        ));
+        assert!(!is_reopen_followup_query(
+            "open source code principles",
+            None,
+            false
+        ));
+    }
+
+    #[test]
+    fn extracts_google_search_query() {
+        assert_eq!(
+            extract_google_search_query("загугли погоду в пензе на сегодня", None, false),
+            Some("погоду в пензе на сегодня".to_string())
+        );
+        assert_eq!(
+            extract_google_search_query("google weather in penza today", None, false),
+            Some("weather in penza today".to_string())
+        );
+        assert_eq!(extract_google_search_query("что за погода", None, false), None);
     }
 
     #[test]

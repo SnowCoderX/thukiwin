@@ -236,6 +236,7 @@ export function ConversationView({
               onImagePreview={onImagePreview}
               errorKind={msg.errorKind}
               thinkingContent={msg.thinkingContent}
+              toolEvents={msg.toolEvents}
               isThinking={
                 isLastAssistant && !msg.content && !!msg.thinkingContent
               }

@@ -28,6 +28,8 @@ const IMAGE_DEFAULTS = {
   availableModels: ['gemma4:e2b', 'llama3.2'],
   activeModel: 'gemma4:e2b',
   onModelChange: vi.fn(),
+  safeMode: true,
+  onSafeModeToggle: vi.fn(),
 };
 
 describe('AskBarView', () => {
@@ -127,7 +129,7 @@ describe('AskBarView', () => {
     expect(setQuery).toHaveBeenCalledWith('hello');
   });
 
-  it('disables textarea during generation', () => {
+  it('keeps textarea enabled during generation so focus can remain in place', () => {
     render(
       <AskBarView
         {...IMAGE_DEFAULTS}
@@ -141,7 +143,7 @@ describe('AskBarView', () => {
       />,
     );
     const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-    expect((textarea as HTMLTextAreaElement).disabled).toBe(true);
+    expect((textarea as HTMLTextAreaElement).disabled).toBe(false);
   });
 
   it('calls onSubmit on Enter key', () => {
@@ -1143,7 +1145,7 @@ describe('AskBarView', () => {
       expect(btn.classList.contains('stop-btn-ring')).toBe(true);
     });
 
-    it('disables textarea when isSubmitPending is true', () => {
+    it('keeps textarea enabled when isSubmitPending is true', () => {
       render(
         <AskBarView
           {...IMAGE_DEFAULTS}
@@ -1158,7 +1160,7 @@ describe('AskBarView', () => {
         />,
       );
       const textarea = screen.getByPlaceholderText('Ask Thuki anything...');
-      expect((textarea as HTMLTextAreaElement).disabled).toBe(true);
+      expect((textarea as HTMLTextAreaElement).disabled).toBe(false);
     });
 
     it('ignores paste when isSubmitPending', () => {
