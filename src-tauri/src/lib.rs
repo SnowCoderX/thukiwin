@@ -994,7 +994,16 @@ pub fn run() {
                         .join("models")
                         .join("ggml-large-v3-turbo.bin")
                 });
-            app.manage(voice::VoiceState::new(model_path));
+            let voice_state = voice::VoiceState::new(model_path);
+            let voice_preload = voice_state.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = voice_preload.get_or_load_context() {
+                    eprintln!("voice: фоновая предзагрузка модели не удалась: {e}");
+                } else {
+                    eprintln!("voice: модель предзагружена и готова к работе");
+                }
+            });
+            app.manage(voice_state);
 
             // ── Orphaned image cleanup (startup + periodic) ─────────
             run_image_cleanup(app.handle());

@@ -257,6 +257,7 @@ interface AskBarViewProps {
   onVoiceToggle?: () => void;
   /** Current voice input status, drives the mic button's visual state. */
   voiceStatus?: 'idle' | 'recording' | 'finishing' | 'error';
+  voiceVolume?: number;
   /** All available Ollama model names for the model picker. */
   availableModels: string[];
   /** Currently active model name. */
@@ -298,6 +299,7 @@ export function AskBarView({
   onScreenshot,
   onVoiceToggle = () => {},
   voiceStatus = 'idle',
+  voiceVolume = 0,
   availableModels,
   activeModel,
   onModelChange,
@@ -316,6 +318,18 @@ export function AskBarView({
 
   /** True briefly after a paste attempt is rejected because max images reached. */
   const [pasteMaxError, setPasteMaxError] = useState(false);
+
+  /** Пересчитываем высоту textarea при любом изменении query — в том числе
+   *  когда голосовой ввод дописывает текст программно. Без этого поле
+   *  остаётся однострочным при голосовом наборе. */
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) {
+      return;
+    }
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
+  }, [query, inputRef]);
 
   useEffect(() => {
     if (!pasteMaxError) return;
@@ -694,19 +708,30 @@ export function AskBarView({
                   : 'Voice input'
             }
           >
-            <button
-              type="button"
-              onClick={onVoiceToggle}
-              disabled={isBusy || voiceStatus === 'finishing'}
-              aria-label="Toggle voice input"
-              className={`shrink-0 w-7 h-7 flex items-center justify-center rounded-lg transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer ${
-                voiceStatus === 'recording'
-                  ? 'text-red-400 bg-red-500/10'
-                  : 'text-text-secondary hover:text-text-primary hover:bg-white/8'
-              }`}
-            >
-              {MIC_ICON}
-            </button>
+            <div className="relative flex items-center justify-center">
+              {voiceStatus === 'recording' && (
+                <div
+                  className="absolute rounded-full bg-red-500/30 transition-all duration-75 ease-out"
+                  style={{
+                    width: `${28 + (voiceVolume ?? 0) * 0.35}px`,
+                    height: `${28 + (voiceVolume ?? 0) * 0.35}px`,
+                  }}
+                />
+              )}
+              <button
+                type="button"
+                onClick={onVoiceToggle}
+                disabled={isBusy || voiceStatus === 'finishing'}
+                aria-label="Toggle voice input"
+                className={`relative z-10 shrink-0 w-7 h-7 flex items-center justify-center rounded-lg transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer ${
+                  voiceStatus === 'recording'
+                    ? 'text-red-400 bg-red-500/10'
+                    : 'text-text-secondary hover:text-text-primary hover:bg-white/8'
+                }`}
+              >
+                {MIC_ICON}
+              </button>
+            </div>
           </Tooltip>
 
           {isAtMaxImages ? (

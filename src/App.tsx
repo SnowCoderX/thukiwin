@@ -52,6 +52,7 @@ const VOICE_HOLD_THRESHOLD_MS = 350;
 /** Записи короче этого порога отменяются целиком, без расшифровки, это защита от случайных Ctrl+что-то. */
 const MIN_VOICE_RECORDING_MS = 1000;
 const SAFE_MODE_STORAGE_KEY = 'thuki_safe_mode';
+const ACTIVE_MODEL_STORAGE_KEY = 'thuki_active_model';
 
 /** Must match `OVERLAY_LOGICAL_WIDTH` in `src-tauri/src/lib.rs`. */
 const OVERLAY_WIDTH = 900;
@@ -169,19 +170,49 @@ function App() {
   const { messages, ask, cancel, isGenerating, reset, loadMessages } =
     useOllama(handleTurnComplete);
 
-  /**
-   * Расшифрованный кусок дописывается в поле ввода, ничего не отправляется
-   * автоматически, пользователь сам решает, когда и что отправить.
-   */
+  const lastVoiceChunkRef = useRef('');
+
   const {
     status: voiceStatus,
+    volume: voiceVolume,
     toggle: toggleVoiceInput,
     start: voiceStart,
     stop: voiceStop,
     cancel: voiceCancel,
-  } = useVoiceInput((text) => {
-    setQuery((prev) => (prev ? `${prev} ${text}` : text));
+  } = useVoiceInput((text, _sessionId, isFinal) => {
+    if (isFinal) {
+      // Финальный чанк содержит полный текст всей записи.
+      // Если промежуточные чанки уже собрали текст — ничего не делаем
+      // (чтобы не было дублирования). Если же промежуточных не было
+      // (короткая запись без пауз) — используем финальный текст.
+      if (text && !lastVoiceChunkRef.current) {
+        setQuery(text);
+      }
+      lastVoiceChunkRef.current = '';
+      return;
+    }
+    // Промежуточный чанк — дописываем новые слова
+    if (text) {
+      lastVoiceChunkRef.current = text;
+      setQuery((prev) => (prev ? `${prev} ${text}` : text));
+    }
   });
+
+  useEffect(() => {
+    if (voiceStatus === 'recording') {
+      lastVoiceChunkRef.current = '';
+    }
+  }, [voiceStatus]);
+
+  const voiceStatusRef = useRef(voiceStatus);
+  useEffect(() => {
+    voiceStatusRef.current = voiceStatus;
+  }, [voiceStatus]);
+
+  /** Время, когда пользователь зажал Ctrl (для определения intent vs tap) */
+  const voiceHoldStartAtRef = useRef(0);
+
+
 
   const {
     speakingMessageId,
@@ -256,6 +287,8 @@ function App() {
   const [sessionId, setSessionId] = useState(0);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
   const [modelConfig, setModelConfig] = useState<ModelConfigState | null>(null);
+  /** Модель из localStorage, применяется после загрузки списка моделей */
+  const savedModelRef = useRef<string | null>(null);
   const [safeMode, setSafeMode] = useState(() => {
     const stored = localStorage.getItem(SAFE_MODE_STORAGE_KEY);
     return stored !== 'off';
@@ -265,14 +298,24 @@ function App() {
   const ctrlTapDownRef = useRef(false);
   const ctrlTapChordedRef = useRef(false);
   const voiceHoldTimerRef = useRef<number | null>(null);
-  const voiceRecordingActiveRef = useRef(false);
-  const voiceRecordingStartedAtRef = useRef(0);
+
   /** Синхронная копия isBusy для чтения внутри keydown-обработчика без лишних пересозданий эффекта. */
   const isBusyRef = useRef(false);
 
   const refreshModelConfig = useCallback(async () => {
     const config = await invoke<ModelConfigState>('get_model_config');
     setModelConfig(config);
+    // Если в localStorage сохранена модель, которая есть в списке — активируем её
+    const saved = localStorage.getItem(ACTIVE_MODEL_STORAGE_KEY);
+    if (saved && config.all.includes(saved) && saved !== config.active) {
+      savedModelRef.current = saved;
+      try {
+        const newConfig = await invoke<ModelConfigState>('set_active_model', { model: saved });
+        setModelConfig(newConfig);
+      } catch {
+        // Если backend отклонил — оставляем дефолт
+      }
+    }
   }, []);
 
   const handleModelChange = useCallback(async (model: string) => {
@@ -281,6 +324,7 @@ function App() {
         model,
       });
       setModelConfig(config);
+      localStorage.setItem(ACTIVE_MODEL_STORAGE_KEY, model);
     } catch {
       // Leave the previous selection intact if the backend rejects the switch.
     }
@@ -1047,6 +1091,10 @@ function App() {
   );
 
   const handleSubmit = useCallback(() => {
+    // Останавливаем голосовой ввод если он активен
+    if (voiceStatusRef.current === 'recording') {
+      void voiceCancel();
+    }
     if (
       (query.trim().length === 0 && attachedImages.length === 0) ||
       isGenerating
@@ -1384,34 +1432,41 @@ function App() {
     }
   }, [messages]);
 
-  /** Global keyboard shortcuts: Escape/Ctrl+W hides overlay; Ctrl+N/S/H/Ctrl+Shift+C for actions. */
-  useEffect(() => {
+    useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (overlayState === 'visible') {
-        if (e.key === 'Control') {
-          ctrlTapDownRef.current = true;
-          ctrlTapChordedRef.current = false;
+      // ── Voice recording via Ctrl hold ───────────────────────────────
+      if (overlayState === 'visible' && e.key === 'Control') {
+        // Если уже идёт запись — игнорируем повторное нажатие
+        if (voiceStatusRef.current === 'recording') {
+          return;
+        }
+        ctrlTapDownRef.current = true;
+        ctrlTapChordedRef.current = false;
+        voiceHoldStartAtRef.current = Date.now();
 
-          // Долгое удержание Ctrl (без чорда с другой клавишей) запускает
-          // голосовую запись. Таймер сам себя отменяет, если раньше придёт
-          // keyup (короткий тап) или чорд (обычный хоткей вроде Ctrl+C).
-          voiceHoldTimerRef.current = window.setTimeout(() => {
-            voiceHoldTimerRef.current = null;
-            if (ctrlTapChordedRef.current || isBusyRef.current) return;
-            voiceRecordingActiveRef.current = true;
-            voiceRecordingStartedAtRef.current = Date.now();
-            void voiceStart();
-          }, VOICE_HOLD_THRESHOLD_MS);
-        } else if (ctrlTapDownRef.current) {
-          ctrlTapChordedRef.current = true;
-          ctrlTapLastAtRef.current = null;
-          if (voiceHoldTimerRef.current !== null) {
-            window.clearTimeout(voiceHoldTimerRef.current);
-            voiceHoldTimerRef.current = null;
+        voiceHoldTimerRef.current = window.setTimeout(() => {
+          voiceHoldTimerRef.current = null;
+          // Не запускаем если был chord (Ctrl+что-то) или busy
+          if (ctrlTapChordedRef.current || isBusyRef.current) {
+            return;
           }
+          // Запускаем запись голоса
+          void voiceStart();
+        }, VOICE_HOLD_THRESHOLD_MS);
+        return;
+      }
+
+      // Любая другая клавиша при зажатом Ctrl = chord, отменяем voice intent
+      if (ctrlTapDownRef.current && e.key !== 'Control') {
+        ctrlTapChordedRef.current = true;
+        ctrlTapLastAtRef.current = null;
+        if (voiceHoldTimerRef.current !== null) {
+          window.clearTimeout(voiceHoldTimerRef.current);
+          voiceHoldTimerRef.current = null;
         }
       }
 
+      // ── Global shortcuts ────────────────────────────────────────────
       if (((e.metaKey || e.ctrlKey) && e.key === 'w') || e.key === 'Escape') {
         e.preventDefault();
         handleCloseOverlay();
@@ -1440,21 +1495,21 @@ function App() {
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
-      if (overlayState !== 'visible' || e.key !== 'Control') return;
+      if (e.key !== 'Control') return;
 
+      // Всегда очищаем таймер
       if (voiceHoldTimerRef.current !== null) {
         window.clearTimeout(voiceHoldTimerRef.current);
         voiceHoldTimerRef.current = null;
       }
 
-      if (voiceRecordingActiveRef.current) {
-        voiceRecordingActiveRef.current = false;
-        const heldMs = Date.now() - voiceRecordingStartedAtRef.current;
-        // Отпустили Ctrl, который держали для записи — это не тап, гасим
-        // счётчик двойного нажатия, чтобы не закрыть окно тем же жестом.
+      // ── Если идёт запись — останавливаем или отменяем ───────────────
+      if (voiceStatusRef.current === 'recording') {
+        const heldMs = Date.now() - voiceHoldStartAtRef.current;
         ctrlTapDownRef.current = false;
         ctrlTapChordedRef.current = false;
         ctrlTapLastAtRef.current = null;
+
         if (heldMs < MIN_VOICE_RECORDING_MS) {
           void voiceCancel();
         } else {
@@ -1463,6 +1518,15 @@ function App() {
         return;
       }
 
+      // ── Если оверлей не виден — просто сбрасываем tap-state ────────
+      if (overlayState !== 'visible') {
+        ctrlTapDownRef.current = false;
+        ctrlTapChordedRef.current = false;
+        ctrlTapLastAtRef.current = null;
+        return;
+      }
+
+      // ── Обработка double-tap Ctrl для закрытия оверлея ─────────────
       if (!ctrlTapDownRef.current) return;
 
       ctrlTapDownRef.current = false;
@@ -1476,10 +1540,7 @@ function App() {
 
       const now = Date.now();
       const lastActivation = ctrlTapLastActivationAtRef.current;
-      if (
-        lastActivation !== null &&
-        now - lastActivation < CTRL_TAP_COOLDOWN_MS
-      ) {
+      if (lastActivation !== null && now - lastActivation < CTRL_TAP_COOLDOWN_MS) {
         return;
       }
 
@@ -1531,8 +1592,8 @@ function App() {
       window.clearTimeout(voiceHoldTimerRef.current);
       voiceHoldTimerRef.current = null;
     }
-    if (voiceRecordingActiveRef.current) {
-      voiceRecordingActiveRef.current = false;
+    // Если идёт запись — отменяем
+    if (voiceStatusRef.current === 'recording') {
       void voiceCancel();
     }
   }, [overlayState, voiceCancel]);
@@ -1789,6 +1850,7 @@ function App() {
                   onScreenshot={handleScreenshot}
                   onVoiceToggle={toggleVoiceInput}
                   voiceStatus={voiceStatus}
+                  voiceVolume={voiceVolume}
                   availableModels={modelConfig?.all ?? [DEFAULT_MODEL_FALLBACK]}
                   activeModel={modelConfig?.active ?? DEFAULT_MODEL_FALLBACK}
                   onModelChange={handleModelChange}
