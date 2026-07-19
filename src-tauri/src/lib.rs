@@ -26,6 +26,7 @@ pub mod tts;
 pub mod voice;
 pub mod wakeword;
 pub mod audio_monitor;
+pub mod region_watch;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -486,6 +487,149 @@ fn set_window_frame(app_handle: tauri::AppHandle, x: f64, y: f64, width: f64, he
 #[tauri::command]
 fn notify_overlay_hidden() {
     OVERLAY_INTENDED_VISIBLE.store(false, Ordering::SeqCst);
+}
+
+// ─── Region selection (окно выделения области для Region Watch) ────────────
+
+/// Верхний левый угол bounding box'а всех мониторов на момент открытия окна
+/// выделения — нужен, чтобы перевести локальные координаты мыши внутри этого
+/// окна обратно в глобальные, в которых работает `region_watch::WatchRect`.
+///
+/// Хранится как managed state, а не пересчитывается в `finish_region_selection`,
+/// чтобы не зависеть от того, что раскладка мониторов не поменяется за время
+/// одного выделения (дёшево и не может рассинхронизироваться).
+struct RegionSelectOrigin {
+    x: i32,
+    y: i32,
+}
+
+/// Открывает прозрачное окно на bounding box всех мониторов (может пересекать
+/// границы двух мониторов) для выделения прямоугольника мышью.
+///
+/// Координаты мониторов берутся так же, как в `show_overlay` (Windows-ветка) —
+/// то есть трактуются как логические один-в-один с физическими, без деления на
+/// `scale_factor`. Это сознательно повторяет уже существующее в файле
+/// упрощение, а не вводит новое несоответствие.
+#[tauri::command]
+fn start_region_selection(app_handle: tauri::AppHandle) -> Result<(), String> {
+    // Уже открыто — просто вернуть фокус вместо второго окна поверх первого.
+    if let Some(w) = app_handle.get_webview_window("region-select") {
+        let _ = w.set_focus();
+        return Ok(());
+    }
+
+    let monitors = app_handle
+        .available_monitors()
+        .map_err(|e| format!("не удалось получить список мониторов: {e}"))?;
+    if monitors.is_empty() {
+        return Err("не найдено ни одного монитора".to_string());
+    }
+
+    let mut min_x = i32::MAX;
+    let mut min_y = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut max_y = i32::MIN;
+    for m in &monitors {
+        let pos = m.position();
+        let size = m.size();
+        min_x = min_x.min(pos.x);
+        min_y = min_y.min(pos.y);
+        max_x = max_x.max(pos.x + size.width as i32);
+        max_y = max_y.max(pos.y + size.height as i32);
+    }
+    let (bx, by, bw, bh) = (min_x, min_y, (max_x - min_x).max(1), (max_y - min_y).max(1));
+
+    let window = tauri::WebviewWindowBuilder::new(
+        &app_handle,
+        "region-select",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Thuki — выбор области")
+    .position(bx as f64, by as f64)
+    .inner_size(bw as f64, bh as f64)
+    .transparent(true)
+    .decorations(false)
+    .always_on_top(true)
+    .resizable(false)
+    .visible(true)
+    .focused(true)
+    .build()
+    .map_err(|e| format!("не удалось открыть окно выбора области: {e}"))?;
+
+    app_handle.manage(RegionSelectOrigin { x: bx, y: by });
+    let _ = window.set_focus();
+
+    // ── Watchdog: жёсткая страховка ──────────────────────────────────
+    // Это окно без рамки, always-on-top, растянутое на всю виртуальную
+    // рабочую область — если по любой причине (ACL заблокировал invoke
+    // из этого окна, вебвью упало при загрузке, фронт кинул необработанное
+    // исключение до навешивания обработчика Esc и т.д.) фронт не сможет
+    // сам вызвать finish_/cancel_region_selection, у пользователя не будет
+    // НИКАКОГО способа закрыть это окно мышью или клавиатурой — только
+    // через диспетчер задач. Поэтому Rust сам гарантированно закрывает
+    // окно спустя таймаут, независимо от того, что происходит на фронте.
+    // Не идеальный UX при реально долгом выделении области, но
+    // несравнимо безопаснее полного зависания.
+    const SELECTION_WATCHDOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+    let watchdog_handle = app_handle.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(SELECTION_WATCHDOG_TIMEOUT);
+        if watchdog_handle.get_webview_window("region-select").is_some() {
+            eprintln!(
+                "region_watch: окно выбора области не закрылось за {}с — закрываю принудительно (watchdog)",
+                SELECTION_WATCHDOG_TIMEOUT.as_secs()
+            );
+            close_region_select_window(&watchdog_handle);
+        }
+    });
+
+    Ok(())
+}
+
+fn close_region_select_window(app_handle: &tauri::AppHandle) {
+    if let Some(w) = app_handle.get_webview_window("region-select") {
+        let _ = w.close();
+    }
+}
+
+/// Вызывается фронтом окна выделения после `mouseup`. Координаты — локальные
+/// для этого окна (CSS-пиксели от левого верхнего угла), Rust сам прибавляет
+/// смещение bounding box, чтобы получить глобальный `WatchRect`.
+///
+/// Слишком маленький прямоугольник (случайный клик без реального драга)
+/// трактуется как отмена, а не как область 0×0.
+#[tauri::command]
+fn finish_region_selection(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    app_handle: tauri::AppHandle,
+    origin: tauri::State<'_, RegionSelectOrigin>,
+    region_state: tauri::State<'_, region_watch::RegionWatchState>,
+) -> Result<(), String> {
+    const MIN_SELECTION_SIZE: u32 = 10;
+
+    if width >= MIN_SELECTION_SIZE && height >= MIN_SELECTION_SIZE {
+        let rect = region_watch::WatchRect {
+            x: origin.x + x,
+            y: origin.y + y,
+            width,
+            height,
+        };
+        region_watch::set_region_watch_rect(Some(rect), region_state);
+    }
+
+    close_region_select_window(&app_handle);
+    Ok(())
+}
+
+/// Вызывается по Esc в окне выделения — закрывает окно, не трогая текущий
+/// сохранённый rect (в отличие от `finish_region_selection` с маленьким
+/// прямоугольником, здесь явно нет намерения ничего менять).
+#[tauri::command]
+fn cancel_region_selection(app_handle: tauri::AppHandle) {
+    close_region_select_window(&app_handle);
 }
 
 /// Quits the application, matching the tray menu "Quit" action.
@@ -1020,6 +1164,10 @@ pub fn run() {
                 });
             wakeword::spawn_listener(app.handle().clone(), wake_word_model_path);
 
+            // ── Region watch (слежение за выделенной областью экрана) ──
+            app.manage(region_watch::RegionWatchState::new());
+            region_watch::spawn_watch_loop(app.handle().clone());
+
             // ── Orphaned image cleanup (startup + periodic) ─────────
             run_image_cleanup(app.handle());
             spawn_periodic_image_cleanup(app.handle().clone());
@@ -1070,6 +1218,14 @@ pub fn run() {
             voice::cancel_voice_recording,
             wakeword::set_wake_word_enabled,
             wakeword::get_wake_word_enabled,
+            region_watch::get_region_watch_config,
+            region_watch::set_region_watch_config,
+            region_watch::set_region_watch_rect,
+            region_watch::set_region_watch_enabled,
+            region_watch::get_region_watch_enabled,
+            start_region_selection,
+            finish_region_selection,
+            cancel_region_selection,
             audio_monitor::is_system_audio_playing,
             set_window_frame,
             finish_onboarding,

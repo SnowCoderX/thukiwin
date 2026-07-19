@@ -33,6 +33,7 @@ import {
 import './App.css';
 import { useProfiles } from './hooks/useProfiles';
 import { ProfileManagerPanel } from './components/ProfileManagerPanel';
+import { RegionWatchPanel } from './components/RegionWatchPanel';
 
 /** Fallback model name used before get_model_config resolves at startup. */
 const DEFAULT_MODEL_FALLBACK = 'gemini-3-flash-preview';
@@ -40,6 +41,7 @@ const DEFAULT_MODEL_FALLBACK = 'gemini-3-flash-preview';
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
 const WAKE_WORD_EVENT = 'thuki://wake-word';
+const REGION_WATCH_FRAME_EVENT = 'thuki://region-watch-frame';
 
 /**
  * Authoritative deadline from the start of the hide transition to the native
@@ -109,6 +111,12 @@ type OverlayVisibilityPayload =
     }
   | { state: 'hide-request' };
 type OverlayState = 'visible' | 'hidden' | 'hiding';
+
+type RegionWatchFramePayload = {
+  path: string;
+  prompt: string;
+  use_profile: boolean;
+};
 
 /**
  * Main application orchestrator for Thuki.
@@ -476,6 +484,20 @@ function App() {
    */
   const isGeneratingRef = useRef(false);
   isGeneratingRef.current = isGenerating;
+
+  /**
+   * Mirrors for the region-watch-frame listener, which is registered once
+   * on mount (same reasoning as `wakeWordEnabledRef`/`headphonesModeRef`
+   * below) and would otherwise close over stale `safeMode`/`agentEnabled`
+   * values from the first render.
+   */
+  const safeModeRef = useRef(safeMode);
+  safeModeRef.current = safeMode;
+  const agentEnabledRef = useRef(agentEnabled);
+  agentEnabledRef.current = agentEnabled;
+
+  /** Whether the Region Watch settings panel is open (inline, like the profile manager). */
+  const [isRegionWatchOpen, setIsRegionWatchOpen] = useState(false);
 
   /**
    * High-water mark for window height during streaming. While the LLM is
@@ -1481,6 +1503,7 @@ function App() {
     let unlistenVisibility: (() => void) | undefined;
     let unlistenOnboarding: (() => void) | undefined;
     let unlistenWakeWord: (() => void) | undefined;
+    let unlistenRegionWatch: (() => void) | undefined;
 
     const attachListeners = async () => {
       unlistenVisibility = await listen<OverlayVisibilityPayload>(
@@ -1521,6 +1544,30 @@ function App() {
           void voiceStart({ autoSubmit: true, prefixText: payload.prefix_text });
         },
       );
+      // Кадр из слежения за областью — та же логика, что и /screen: сразу
+      // отправляем ask() с уже сохранённым на диске PNG. В отличие от
+      // /screen, здесь нет "ожидающего" пузыря в чате — кадры приходят в
+      // фоне, а не по явному действию пользователя, так что не блокируем
+      // их, если прямо сейчас идёт генерация (подождём следующего кадра).
+      unlistenRegionWatch = await listen<RegionWatchFramePayload>(
+        REGION_WATCH_FRAME_EVENT,
+        ({ payload }) => {
+          if (isGeneratingRef.current) return;
+          const displayText =
+            payload.prompt.trim() ||
+            'Опиши, что изменилось в выбранной области экрана.';
+          ask(
+            displayText,
+            undefined,
+            [payload.path],
+            undefined,
+            undefined,
+            safeModeRef.current,
+            payload.use_profile ? getProfileSystemPrompt() : undefined,
+            agentEnabledRef.current,
+          );
+        },
+      );
       // Both listeners registered — safe to let Rust decide what to show on launch.
       await invoke('notify_frontend_ready');
     };
@@ -1530,8 +1577,9 @@ function App() {
       unlistenVisibility?.();
       unlistenOnboarding?.();
       unlistenWakeWord?.();
+      unlistenRegionWatch?.();
     };
-  }, [replayEntranceAnimation, requestHideOverlay, voiceStart]);
+  }, [replayEntranceAnimation, requestHideOverlay, voiceStart, ask, getProfileSystemPrompt]);
 
   /**
    * Combined close handler shared by the keyboard shortcut (Esc/Ctrl+W)
@@ -1985,6 +2033,40 @@ function App() {
                           onSetDefault={setDefaultProfile}
                           onClose={() => setIsProfileManagerOpen(false)}
                         />
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Region Watch — inline panel + its own toggle, same pattern as
+                    the Profile Manager above. Kept as a plain inline row rather
+                    than an icon button inside AskBarView, since that component's
+                    source isn't part of this change. */}
+                {!isSubmitPending && (
+                  <div className="flex-shrink-0 border-t border-surface-border px-4 py-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setIsRegionWatchOpen((prev) => !prev)}
+                      className="text-xs text-surface-muted hover:text-surface-fg"
+                    >
+                      {isRegionWatchOpen ? '▾' : '▸'} Слежение за областью экрана
+                    </button>
+                  </div>
+                )}
+                <AnimatePresence>
+                  {isRegionWatchOpen && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{
+                        height: { duration: 0.25, ease: [0.16, 1, 0.3, 1] },
+                        opacity: { duration: 0.15 },
+                      }}
+                      className="flex-shrink-0 border-t border-surface-border overflow-hidden"
+                    >
+                      <div className={`overflow-y-auto ${isChatMode ? 'max-h-[40vh]' : 'max-h-[320px]'}`}>
+                        <RegionWatchPanel onClose={() => setIsRegionWatchOpen(false)} />
                       </div>
                     </motion.div>
                   )}

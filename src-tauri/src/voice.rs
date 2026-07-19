@@ -798,8 +798,10 @@ fn looks_like_gibberish(text: &str) -> bool {
 }
 
 /// Распознаёт речь с приоритетом на русский и английский.
-/// Стратегия: запускаем auto-detect, но если результат короткий или похож на мусор —
-/// пробуем явно ru и en, выбирая лучший.
+/// Стратегия:
+/// - Для коротких фраз (< 2 сек) — сразу пробуем ru, потом en, без auto-detect
+/// - Для длинных фраз — auto-detect с языковым prompt, fallback на ru/en
+/// - Используем initial_prompt чтобы подсказать модели ожидаемые языки
 pub(crate) fn transcribe_chunk(ctx: &WhisperContext, samples: &[f32], sample_rate: u32) -> Result<String, String> {
     if samples.is_empty() {
         return Ok(String::new());
@@ -813,11 +815,42 @@ pub(crate) fn transcribe_chunk(ctx: &WhisperContext, samples: &[f32], sample_rat
         return Ok(String::new());
     }
 
-    // Первый проход: auto-detect
+    let duration_secs = resampled.len() as f64 / TARGET_SAMPLE_RATE as f64;
+    let is_short = duration_secs < 2.0;
+
+    if is_short {
+        // Для коротких фраз auto-detect почти всегда гадит — сразу пробуем ru, потом en
+        let text_ru = run_whisper_pass(ctx, &resampled, Some("ru"))?;
+        let ru_good = !looks_like_gibberish(&text_ru) && !text_ru.is_empty();
+        eprintln!("voice: short chunk ru='{}' good={}", text_ru, ru_good);
+
+        if ru_good {
+            let result = strip_hallucinations(&text_ru);
+            eprintln!("voice: result (short ru) -> '{}'", result);
+            return Ok(result);
+        }
+
+        let text_en = run_whisper_pass(ctx, &resampled, Some("en"))?;
+        let en_good = !looks_like_gibberish(&text_en) && !text_en.is_empty();
+        eprintln!("voice: short chunk en='{}' good={}", text_en, en_good);
+
+        if en_good {
+            let result = strip_hallucinations(&text_en);
+            eprintln!("voice: result (short en) -> '{}'", result);
+            return Ok(result);
+        }
+
+        // Оба плохие — берём тот что длиннее
+        let best = if text_ru.len() >= text_en.len() { text_ru } else { text_en };
+        let result = strip_hallucinations(&best);
+        eprintln!("voice: result (short fallback) -> '{}'", result);
+        return Ok(result);
+    }
+
+    // Для длинных фраз: auto-detect с языковым prompt, затем fallback
     let text_auto = run_whisper_pass(ctx, &resampled, None)?;
     eprintln!("voice: auto-detect text='{}'", text_auto);
 
-    // Эвристика: если auto дал осмысленный результат (достаточно длинный, без подозрительных паттернов) — используем
     let auto_looks_good = text_auto.len() >= 5 && !looks_like_gibberish(&text_auto);
     if auto_looks_good {
         let result = strip_hallucinations(&text_auto);
@@ -825,12 +858,11 @@ pub(crate) fn transcribe_chunk(ctx: &WhisperContext, samples: &[f32], sample_rat
         return Ok(result);
     }
 
-    // Auto дал мусор или слишком короткий результат — пробуем ru и en явно
-    let text_en = run_whisper_pass(ctx, &resampled, Some("en"))?;
+    // Auto дал мусор — пробуем ru и en явно
     let text_ru = run_whisper_pass(ctx, &resampled, Some("ru"))?;
+    let text_en = run_whisper_pass(ctx, &resampled, Some("en"))?;
     eprintln!("voice: fallback en='{}' ru='{}'", text_en, text_ru);
 
-    // Выбираем тот, у которого результат длиннее и не похож на мусор
     let en_good = !looks_like_gibberish(&text_en);
     let ru_good = !looks_like_gibberish(&text_ru);
 
@@ -841,7 +873,6 @@ pub(crate) fn transcribe_chunk(ctx: &WhisperContext, samples: &[f32], sample_rat
     } else if ru_good {
         text_ru
     } else {
-        // Оба мусор — берём тот что длиннее
         if text_en.len() >= text_ru.len() { text_en } else { text_ru }
     };
 
@@ -869,6 +900,10 @@ pub(crate) fn run_whisper_pass(
     params.set_n_threads(4);
     params.set_temperature(0.0);
     params.set_temperature_inc(0.0);
+
+    // Подсказка модели о языке — помогает на коротких фразах и убирает
+    // случайные языковые артефакты (грузинский, индейский и т.д.)
+    params.set_initial_prompt("Transcribe in Russian or English only.");
 
     state.full(params, samples).map_err(|e| e.to_string())?;
 

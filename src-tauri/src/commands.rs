@@ -1331,17 +1331,68 @@ pub async fn ask_ollama(
         let epoch = history.epoch.load(Ordering::SeqCst);
 
         // ── PROFILE: compose system prompt with optional profile overlay ──
+
+
         let mut system_content = system_prompt.0.clone();
+
+
+        
+
+
+        // Языковое ограничение: отвечаем только на языке пользователя (ru/en)
+
+
+        let lang_restriction = if message_prefers_russian(&message) {
+
+
+            "\n\nCRITICAL LANGUAGE RULE: The user is speaking Russian. You MUST respond ONLY in Russian. Never use any other language (no Georgian, no Hindi, no Spanish, no German, no other languages). If you cannot answer in Russian, say so in Russian."
+
+
+        } else {
+
+
+            "\n\nCRITICAL LANGUAGE RULE: The user is speaking English. You MUST respond ONLY in English. Never use any other language (no Georgian, no Hindi, no Spanish, no German, no other languages). If you cannot answer in English, say so in English."
+
+
+        };
+
+
+        system_content.push_str(lang_restriction);
+
+
+        
+
+
         if agent_enabled {
+
+
             system_content.push_str("\n\n");
+
+
             system_content.push_str(&agent::tool_system_prompt(safe_mode));
+
+
         }
+
+
         if let Some(ref profile) = profile_system_prompt {
+
+
             if !profile.trim().is_empty() {
+
+
                 system_content.push_str("\n\n");
+
+
                 system_content.push_str(profile);
+
+
             }
+
+
         }
+
+
         // ── END PROFILE ──
 
         let mut msgs = vec![AgentChatMessage {
