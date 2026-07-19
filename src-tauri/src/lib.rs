@@ -24,6 +24,8 @@ pub mod onboarding;
 pub mod screenshot;
 pub mod tts;
 pub mod voice;
+pub mod wakeword;
+pub mod audio_monitor;
 
 #[cfg(target_os = "macos")]
 mod activator;
@@ -1005,9 +1007,25 @@ pub fn run() {
             });
             app.manage(voice_state);
 
+            // ── Wake-word listener (фоновое "туки") ──────────────────
+            app.manage(wakeword::WakeWordState::new());
+            let wake_word_model_path = std::env::var("WAKE_WORD_MODEL_PATH")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    app.path()
+                        .app_data_dir()
+                        .expect("failed to resolve app data directory")
+                        .join("models")
+                        .join("ggml-small.bin")
+                });
+            wakeword::spawn_listener(app.handle().clone(), wake_word_model_path);
+
             // ── Orphaned image cleanup (startup + periodic) ─────────
             run_image_cleanup(app.handle());
             spawn_periodic_image_cleanup(app.handle().clone());
+
+            // ── System audio output monitor (prevents wake-word during playback) ──
+            audio_monitor::start();
 
             Ok(())
         })
@@ -1050,6 +1068,9 @@ pub fn run() {
             voice::start_voice_recording,
             voice::stop_voice_recording,
             voice::cancel_voice_recording,
+            wakeword::set_wake_word_enabled,
+            wakeword::get_wake_word_enabled,
+            audio_monitor::is_system_audio_playing,
             set_window_frame,
             finish_onboarding,
             // macOS-specific permission commands

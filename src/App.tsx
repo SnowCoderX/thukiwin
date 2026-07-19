@@ -31,12 +31,15 @@ import {
   buildPrompt,
 } from './config/commands';
 import './App.css';
+import { useProfiles } from './hooks/useProfiles';
+import { ProfileManagerPanel } from './components/ProfileManagerPanel';
 
 /** Fallback model name used before get_model_config resolves at startup. */
 const DEFAULT_MODEL_FALLBACK = 'gemini-3-flash-preview';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
+const WAKE_WORD_EVENT = 'thuki://wake-word';
 
 /**
  * Authoritative deadline from the start of the hide transition to the native
@@ -52,6 +55,9 @@ const VOICE_HOLD_THRESHOLD_MS = 350;
 /** Записи короче этого порога отменяются целиком, без расшифровки, это защита от случайных Ctrl+что-то. */
 const MIN_VOICE_RECORDING_MS = 1000;
 const SAFE_MODE_STORAGE_KEY = 'thuki_safe_mode';
+const AGENT_ENABLED_STORAGE_KEY = 'thuki_agent_enabled';
+const WAKE_WORD_ENABLED_STORAGE_KEY = 'thuki_wake_word_enabled';
+const HEADPHONES_MODE_STORAGE_KEY = 'thuki_headphones_mode'; 
 const ACTIVE_MODEL_STORAGE_KEY = 'thuki_active_model';
 
 /** Must match `OVERLAY_LOGICAL_WIDTH` in `src-tauri/src/lib.rs`. */
@@ -121,6 +127,7 @@ function App() {
   const [onboardingStage, setOnboardingStage] =
     useState<OnboardingStage | null>(null);
 
+    
   /**
    * Whether the ask-bar history panel is currently open.
    * Distinct from the chat-mode history dropdown (controlled by the same toggle
@@ -133,6 +140,21 @@ function App() {
    * of the conversation list.
    */
   const [pendingNewConversation, setPendingNewConversation] = useState(false);
+
+  const {
+    profiles,
+    activeProfile,
+    activeProfileId,
+    setActiveProfile,
+    createProfile,
+    updateProfile,
+    deleteProfile,
+    duplicateProfile,
+    setDefaultProfile, 
+    getProfileSystemPrompt,
+  } = useProfiles();
+
+  const [isProfileManagerOpen, setIsProfileManagerOpen] = useState(false);
 
   /**
    * Direct reference to the morphing container DOM node, stored alongside the
@@ -175,26 +197,39 @@ function App() {
   const {
     status: voiceStatus,
     volume: voiceVolume,
+    autoSendFraction,
     toggle: toggleVoiceInput,
     start: voiceStart,
     stop: voiceStop,
     cancel: voiceCancel,
   } = useVoiceInput((text, _sessionId, isFinal) => {
     if (isFinal) {
-      // Финальный чанк содержит полный текст всей записи.
-      // Если промежуточные чанки уже собрали текст — ничего не делаем
-      // (чтобы не было дублирования). Если же промежуточных не было
-      // (короткая запись без пауз) — используем финальный текст.
-      if (text && !lastVoiceChunkRef.current) {
-        setQuery(text);
-      }
+      // Ручной режим (Ctrl зажат): текст здесь всегда пустой — весь текст
+      // уже собран из промежуточных чанков в query.
+      // Авто-режим (после "туки"): здесь приходит ПОЛНАЯ распознанная фраза —
+      // отправляем её напрямую в ask(), минуя текстовое поле (руки свободны).
       lastVoiceChunkRef.current = '';
+      if (text.trim()) {
+        ask(text.trim(), undefined, undefined, undefined, undefined, safeMode, undefined, agentEnabled);
+      }
       return;
     }
-    // Промежуточный чанк — дописываем новые слова
+    // Промежуточный чанк — дописываем новые слова.
+    // Защита от дублирования: если новый текст начинается с предыдущего —
+    // берём только разницу (whisper иногда возвращает пересекающийся текст).
     if (text) {
-      lastVoiceChunkRef.current = text;
-      setQuery((prev) => (prev ? `${prev} ${text}` : text));
+      const last = lastVoiceChunkRef.current;
+      let toAppend = text;
+      if (last && text.startsWith(last)) {
+        toAppend = text.slice(last.length).trimStart();
+      }
+      if (toAppend) {
+        lastVoiceChunkRef.current = text;
+        setQuery((prev) => (prev ? `${prev} ${toAppend}` : toAppend));
+      } else {
+        // Текст полностью дублируется — просто обновляем ref
+        lastVoiceChunkRef.current = text;
+      }
     }
   });
 
@@ -245,12 +280,14 @@ function App() {
    *  fires the actual `ask()` once every image has a resolved `filePath`.
    *  Also stores `promptOverride` when the deferred submit originates from
    *  a utility command, and `context` for any quoted selected text. */
-  const pendingSubmitRef = useRef<{
+    const pendingSubmitRef = useRef<{
     query: string;
     context: string | undefined;
     think: boolean;
     promptOverride?: string;
     safeMode: boolean;
+    agentEnabled: boolean;
+    profileSystemPrompt?: string;
   } | null>(null);
   /** True while waiting for images to finish processing before a deferred
    *  submit. Drives the "waiting" UI state in the ask bar. */
@@ -293,6 +330,34 @@ function App() {
     const stored = localStorage.getItem(SAFE_MODE_STORAGE_KEY);
     return stored !== 'off';
   });
+  const [agentEnabled, setAgentEnabled] = useState(() => {          // ← новое
+    const stored = localStorage.getItem(AGENT_ENABLED_STORAGE_KEY);
+    return stored !== 'off';
+  });
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(() => {
+    const stored = localStorage.getItem(WAKE_WORD_ENABLED_STORAGE_KEY);
+    return stored !== 'off';
+  });
+  const [headphonesMode, setHeadphonesMode] = useState(() => {
+    const stored = localStorage.getItem(HEADPHONES_MODE_STORAGE_KEY);
+    return stored === 'on';
+  });
+
+  const wakeWordEnabledRef = useRef(wakeWordEnabled);
+  useEffect(() => {
+    wakeWordEnabledRef.current = wakeWordEnabled;
+  }, [wakeWordEnabled]);
+
+  const headphonesModeRef = useRef(headphonesMode);
+  useEffect(() => {
+    headphonesModeRef.current = headphonesMode;
+  }, [headphonesMode]);
+
+  const speakingMessageIdRef = useRef(speakingMessageId);
+  useEffect(() => {
+    speakingMessageIdRef.current = speakingMessageId;
+  }, [speakingMessageId]);
+
   const ctrlTapLastAtRef = useRef<number | null>(null);
   const ctrlTapLastActivationAtRef = useRef<number | null>(null);
   const ctrlTapDownRef = useRef(false);
@@ -334,8 +399,32 @@ function App() {
     localStorage.setItem(SAFE_MODE_STORAGE_KEY, safeMode ? 'on' : 'off');
   }, [safeMode]);
 
+  useEffect(() => {                                             
+    localStorage.setItem(AGENT_ENABLED_STORAGE_KEY, agentEnabled ? 'on' : 'off');
+  }, [agentEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem(WAKE_WORD_ENABLED_STORAGE_KEY, wakeWordEnabled ? 'on' : 'off');
+  }, [wakeWordEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem(HEADPHONES_MODE_STORAGE_KEY, headphonesMode ? 'on' : 'off');
+  }, [headphonesMode]);
+
   const handleSafeModeToggle = useCallback(() => {
     setSafeMode((current) => !current);
+  }, []);
+
+  const handleAgentEnabledToggle = useCallback(() => {                
+    setAgentEnabled((current) => !current);
+  }, []);
+
+  const handleWakeWordToggle = useCallback(() => {
+    setWakeWordEnabled((current) => !current);
+  }, []);
+
+  const handleHeadphonesModeToggle = useCallback(() => {
+    setHeadphonesMode((current) => !current);
   }, []);
 
   /**
@@ -478,47 +567,54 @@ function App() {
    * Clears conversation state for a fresh session each time the overlay appears.
    */
   const replayEntranceAnimation = useCallback(
-    (
-      context: string | null,
-      windowX: number | null,
-      windowY: number | null,
-      screenBottomY: number | null,
-    ) => {
-      const shouldGrowUp =
-        windowY !== null &&
-        screenBottomY !== null &&
-        windowY + MAX_CHAT_WINDOW_HEIGHT > screenBottomY;
-      growsUpwardRef.current = shouldGrowUp;
-      setGrowsUpward(shouldGrowUp);
-      maxHeightRef.current = 0;
-      if (shouldGrowUp && windowX !== null && windowY !== null) {
-        windowPosRef.current = {
-          x: windowX,
-          bottomY: windowY + COLLAPSED_WINDOW_HEIGHT,
-        };
-      }
-      setSessionId((id) => id + 1);
-      setQuery('');
-      setSelectedContext(context);
-      setIsHistoryOpen(false);
-      setAttachedImages((prev) => {
-        for (const img of prev) URL.revokeObjectURL(img.blobUrl);
-        return [];
-      });
-      void refreshModelConfig();
-      pendingSubmitRef.current = null;
-      screenCapturePendingRef.current = false;
-      screenCaptureInputSnapshotRef.current = null;
-      setIsSubmitPending(false);
-      setPendingUserMessage(null);
-      setCaptureError(null);
+  (
+    context: string | null,
+    windowX: number | null,
+    windowY: number | null,
+    screenBottomY: number | null,
+  ) => {
+    const shouldGrowUp =
+      windowY !== null &&
+      screenBottomY !== null &&
+      windowY + MAX_CHAT_WINDOW_HEIGHT > screenBottomY;
+    growsUpwardRef.current = shouldGrowUp;
+    setGrowsUpward(shouldGrowUp);
+    maxHeightRef.current = 0;
+    if (shouldGrowUp && windowX !== null && windowY !== null) {
+      windowPosRef.current = {
+        x: windowX,
+        bottomY: windowY + COLLAPSED_WINDOW_HEIGHT,
+      };
+    }
+    setSessionId((id) => id + 1);
+    setQuery('');
+    setSelectedContext(context);
+    setIsHistoryOpen(false);
+    setAttachedImages((prev) => {
+      for (const img of prev) URL.revokeObjectURL(img.blobUrl);
+      return [];
+    });
+    void refreshModelConfig();
+    pendingSubmitRef.current = null;
+    screenCapturePendingRef.current = false;
+    screenCaptureInputSnapshotRef.current = null;
+    setIsSubmitPending(false);
+    setPendingUserMessage(null);
+    setCaptureError(null);
 
-      reset();
-      resetHistory();
-      setOverlayState('visible');
-    },
-    [refreshModelConfig, reset, resetHistory],
-  );
+    // ↓↓↓ каждая свежая сессия начинается с дефолтного профиля
+    const defaultProfile = profiles.find((p) => p.isDefault);
+    if (defaultProfile) {
+      setActiveProfile(defaultProfile.id);
+    }
+    // ↑↑↑
+
+    reset();
+    resetHistory();
+    setOverlayState('visible');
+  },
+  [refreshModelConfig, reset, resetHistory, profiles, setActiveProfile], // ← добавить profiles и setActiveProfile в зависимости
+);
 
   /**
    * Moves the overlay into an exit phase. The actual Tauri window hide call is
@@ -685,12 +781,12 @@ function App() {
       if (isSaved) {
         await unsave();
       } else {
-        await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
+        await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK, activeProfile.id);
       }
     } catch {
       // State stays unchanged on failure; feedback is implicit in the icon.
     }
-  }, [isSaved, unsave, save, messages, modelConfig]);
+  }, [isSaved, unsave, save, messages, modelConfig, activeProfile]);
 
   /**
    * Loads a conversation from history, replacing the current session.
@@ -725,7 +821,7 @@ function App() {
   const handleSaveAndLoad = useCallback(
     async (id: string) => {
       try {
-        await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
+        await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK, activeProfile.id);
       } catch {
         // Save failed — abort to avoid leaving the current session unprotected.
         return;
@@ -739,7 +835,7 @@ function App() {
         setIsHistoryOpen(false);
       }
     },
-    [save, messages, loadConversation, loadMessages, modelConfig],
+    [save, messages, loadConversation, loadMessages, modelConfig, activeProfile],
   );
 
   /**
@@ -797,7 +893,7 @@ function App() {
   /** Saves the current conversation then starts a fresh one. */
   const handleSaveAndNew = useCallback(async () => {
     try {
-      await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK);
+      await save(messages, modelConfig?.active ?? DEFAULT_MODEL_FALLBACK, activeProfile.id);
     } catch {
       return;
     }
@@ -970,18 +1066,20 @@ function App() {
   }, []);
 
   /** Fires the actual ask() call and cleans up attached images + input. */
-  const executeSubmit = useCallback(
+    const executeSubmit = useCallback(
     (
       submitQuery: string,
       context: string | undefined,
       think?: boolean,
       submitSafeMode = true,
+      profileSystemPrompt?: string,
+      submitAgentEnabled = true,       
     ) => {
       const readyPaths = attachedImages
         .filter((img) => img.filePath !== null)
         .map((img) => img.filePath as string);
       const images = readyPaths.length > 0 ? readyPaths : undefined;
-      ask(submitQuery, context, images, think, undefined, submitSafeMode);
+      ask(submitQuery, context, images, think, undefined, submitSafeMode, profileSystemPrompt, submitAgentEnabled);
       setSelectedContext(null);
       setQuery('');
       for (const img of attachedImages) {
@@ -1081,7 +1179,8 @@ function App() {
         .map((img) => img.filePath as string);
       readyPaths.push(screenshotPath);
 
-      ask(fullQuery, context, readyPaths, think, undefined, submitSafeMode);
+      const profileSystemPrompt = getProfileSystemPrompt();
+      ask(fullQuery, context, readyPaths, think, undefined, submitSafeMode, profileSystemPrompt, agentEnabled);
       for (const img of attachedImages) {
         URL.revokeObjectURL(img.blobUrl);
       }
@@ -1162,6 +1261,7 @@ function App() {
           .filter((img) => img.filePath !== null)
           .map((img) => img.filePath as string);
         const images = readyPaths.length > 0 ? readyPaths : undefined;
+        const profileSystemPrompt = getProfileSystemPrompt();
         ask(
           displayText,
           context,
@@ -1169,6 +1269,8 @@ function App() {
           hasThink || undefined,
           composedPrompt,
           safeMode,
+          profileSystemPrompt,
+          agentEnabled,
         );
         setSelectedContext(null);
         setQuery('');
@@ -1186,8 +1288,9 @@ function App() {
         query: displayText,
         context,
         think: hasThink,
-        promptOverride: composedPrompt,
         safeMode,
+        agentEnabled,
+        profileSystemPrompt: getProfileSystemPrompt(),
       };
       setIsSubmitPending(true);
       setPendingUserMessage({
@@ -1218,7 +1321,7 @@ function App() {
       (img) => img.filePath === null,
     );
     if (!hasPendingImages) {
-      executeSubmit(trimmedQuery, context, hasThink || undefined, safeMode);
+      executeSubmit(trimmedQuery, context, hasThink || undefined, safeMode, getProfileSystemPrompt(), agentEnabled);
       return;
     }
 
@@ -1229,6 +1332,8 @@ function App() {
       context,
       think: hasThink,
       safeMode,
+      agentEnabled,
+      profileSystemPrompt: getProfileSystemPrompt(),
     };
     setIsSubmitPending(true);
 
@@ -1256,6 +1361,7 @@ function App() {
     attachedImages,
     safeMode,
     setCaptureError,
+    getProfileSystemPrompt,
   ]);
 
   // When a pending submit exists and all images finish processing, fire it.
@@ -1287,6 +1393,8 @@ function App() {
       think,
       promptOverride,
       safeMode: pendingSafeMode,
+      agentEnabled: pendingAgentEnabled,
+      profileSystemPrompt,
     } = pendingSubmitRef.current;
     pendingSubmitRef.current = null;
     setIsSubmitPending(false);
@@ -1301,6 +1409,8 @@ function App() {
       think || undefined,
       promptOverride,
       pendingSafeMode,
+      profileSystemPrompt,
+      pendingAgentEnabled,
     );
     // Note: the display content in the pending bubble (set in handleSubmit)
     // already includes command triggers for visibility in the chat.
@@ -1370,6 +1480,7 @@ function App() {
   useEffect(() => {
     let unlistenVisibility: (() => void) | undefined;
     let unlistenOnboarding: (() => void) | undefined;
+    let unlistenWakeWord: (() => void) | undefined;
 
     const attachListeners = async () => {
       unlistenVisibility = await listen<OverlayVisibilityPayload>(
@@ -1393,6 +1504,23 @@ function App() {
           setOnboardingStage(payload.stage);
         },
       );
+      // Rust уже показал оверлей (show_overlay) до отправки этого события —
+      // здесь только запускаем авто-командную запись голоса.
+      unlistenWakeWord = await listen<{ prefix_text: string }>(
+        WAKE_WORD_EVENT,
+        async ({ payload }) => {
+          if (!wakeWordEnabledRef.current) return;
+          // Headphones mode: always listen — mic can't hear the headphones output.
+          if (!headphonesModeRef.current) {
+            // Block if our own TTS is speaking (prevents self-hearing via speakers).
+            if (speakingMessageIdRef.current !== null) return;
+            // Block if ANY system audio is playing (YouTube, Spotify, games, etc.).
+            const isPlaying = await invoke<boolean>('is_system_audio_playing');
+            if (isPlaying) return;
+          }
+          void voiceStart({ autoSubmit: true, prefixText: payload.prefix_text });
+        },
+      );
       // Both listeners registered — safe to let Rust decide what to show on launch.
       await invoke('notify_frontend_ready');
     };
@@ -1401,8 +1529,9 @@ function App() {
     return () => {
       unlistenVisibility?.();
       unlistenOnboarding?.();
+      unlistenWakeWord?.();
     };
-  }, [replayEntranceAnimation, requestHideOverlay]);
+  }, [replayEntranceAnimation, requestHideOverlay, voiceStart]);
 
   /**
    * Combined close handler shared by the keyboard shortcut (Esc/Ctrl+W)
@@ -1831,6 +1960,36 @@ function App() {
                   </div>
                 )}
 
+               {/* Profile Manager — inline between chat and input bar */}
+                <AnimatePresence>
+                  {isProfileManagerOpen && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{
+                        height: { duration: 0.25, ease: [0.16, 1, 0.3, 1] },
+                        opacity: { duration: 0.15 },
+                      }}
+                      className="flex-shrink-0 border-t border-surface-border overflow-hidden"
+                    >
+                      <div className={`overflow-y-auto ${isChatMode ? 'max-h-[40vh]' : 'max-h-[320px]'}`}>
+                        <ProfileManagerPanel
+                          profiles={profiles}
+                          activeProfileId={activeProfileId}
+                          onCreate={createProfile}
+                          onUpdate={updateProfile}
+                          onDelete={deleteProfile}
+                          onDuplicate={duplicateProfile}
+                          onSetActive={setActiveProfile}
+                          onSetDefault={setDefaultProfile}
+                          onClose={() => setIsProfileManagerOpen(false)}
+                        />
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
                 {/* Input Bar — always pinned to the bottom */}
                 <AskBarView
                   query={query}
@@ -1851,12 +2010,21 @@ function App() {
                   onVoiceToggle={toggleVoiceInput}
                   voiceStatus={voiceStatus}
                   voiceVolume={voiceVolume}
+                  autoSendFraction={autoSendFraction}
                   availableModels={modelConfig?.all ?? [DEFAULT_MODEL_FALLBACK]}
                   activeModel={modelConfig?.active ?? DEFAULT_MODEL_FALLBACK}
                   onModelChange={handleModelChange}
                   safeMode={safeMode}
                   onSafeModeToggle={handleSafeModeToggle}
+                  agentEnabled={agentEnabled}
+                  onAgentEnabledToggle={handleAgentEnabledToggle}
+                  wakeWordEnabled={wakeWordEnabled}
+                  onWakeWordToggle={handleWakeWordToggle}
+                  headphonesMode={headphonesMode}
+                  onHeadphonesModeToggle={handleHeadphonesModeToggle}
                   isDragOver={isDragOver ?? undefined}
+                  activeProfileName={activeProfile.name}
+                  onProfileClick={() => setIsProfileManagerOpen((prev) => !prev)}
                 />
               </div>
 

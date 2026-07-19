@@ -70,7 +70,7 @@ export function useConversationHistory() {
    * @param model The Ollama model name used in this session.
    */
   const save = useCallback(
-    async (messages: Message[], model: string): Promise<void> => {
+    async (messages: Message[], model: string, profileId?: string | null): Promise<void> => {
       if (isSaved) return;
 
       const payloads = messages.map(toPayload);
@@ -80,6 +80,7 @@ export function useConversationHistory() {
         {
           messages: payloads,
           model,
+          profileId: profileId ?? null,
         },
       );
 

@@ -12,10 +12,6 @@ import type { AttachedImage } from '../types/image';
 import { MAX_IMAGE_SIZE_BYTES } from '../types/image';
 import { COMMANDS } from '../config/commands';
 
-/**
- * Hoisted static SVG — prevents re-allocation on every render cycle.
- * @see Vercel React Best Practices §6.3 — Hoist Static JSX Elements
- */
 const ARROW_UP_ICON = (
   <svg
     width="16"
@@ -35,9 +31,6 @@ const ARROW_UP_ICON = (
   </svg>
 );
 
-/**
- * Hoisted static SVG — square stop icon displayed during active generation.
- */
 const STOP_ICON = (
   <svg
     width="16"
@@ -51,12 +44,6 @@ const STOP_ICON = (
   </svg>
 );
 
-/**
- * SVG overlay that traces a glowing comet-tail along the button's border.
- * Uses `pathLength="100"` so dash math is in clean percentages regardless
- * of the actual rect perimeter. Three layered strokes at staggered offsets
- * create a smooth fade-out tail that follows the rounded-rect path exactly.
- */
 const BORDER_TRACE_RING = (
   <svg
     className="stop-ring-svg"
@@ -94,7 +81,41 @@ const BORDER_TRACE_RING = (
   </svg>
 );
 
-/** Hoisted static history (clock) icon — prevents re-allocation on every render. */
+/**
+ * Кольцо обратного отсчёта до авто-отправки голосовой команды (после
+ * "туки"). `fraction` растёт от 0 до 1 по мере тишины после речи — когда
+ * доходит до 1, происходит отправка. Используем тот же приём pathLength=100,
+ * что и BORDER_TRACE_RING, но как один убывающий/растущий strokeDashoffset,
+ * а не готовую CSS-анимацию — потому что здесь прогресс управляется живым
+ * значением из бэкенда, а не фиксированной длительностью.
+ */
+function AutoSendRing({ fraction }: { fraction: number }) {
+  return (
+    <svg
+      viewBox="0 0 40 40"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+      className="absolute inset-0 w-full h-full pointer-events-none"
+    >
+      <rect
+        x="1"
+        y="1"
+        width="38"
+        height="38"
+        rx="13"
+        pathLength="100"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeDasharray="100"
+        strokeDashoffset={100 - fraction * 100}
+        style={{ transition: 'stroke-dashoffset 100ms linear' }}
+      />
+    </svg>
+  );
+}
+
 const HISTORY_ICON = (
   <svg
     width="14"
@@ -122,7 +143,6 @@ const HISTORY_ICON = (
   </svg>
 );
 
-/** Hoisted static camera icon — triggers screenshot capture. */
 const CAMERA_ICON = (
   <svg
     width="14"
@@ -142,7 +162,6 @@ const CAMERA_ICON = (
   </svg>
 );
 
-/** Hoisted static microphone icon — toggles voice recording. */
 const MIC_ICON = (
   <svg
     width="14"
@@ -162,10 +181,6 @@ const MIC_ICON = (
   </svg>
 );
 
-/**
- * Renders text with command triggers highlighted in violet for the mirror div.
- * Only the first occurrence of each command is highlighted; duplicates render plain.
- */
 export function renderHighlightedText(text: string): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let remaining = text;
@@ -211,76 +226,47 @@ export function renderHighlightedText(text: string): React.ReactNode {
   return <>{parts}</>;
 }
 
-/**
- * Maximum number of manually attached images per message. The backend allows
- * one additional image from /screen capture, for a total of 4 per message
- * (MAX_IMAGES_PER_MESSAGE in images.rs).
- */
 export const MAX_IMAGES = 3;
 
-/** Props for the AskBarView component. */
 interface AskBarViewProps {
-  /** The current user input text. */
   query: string;
-  /** State setter to update the user input text. */
   setQuery: React.Dispatch<React.SetStateAction<string>>;
-  /** True if the chat history is expanded or currently generating. */
   isChatMode: boolean;
-  /** True if the AI is actively generating a response. */
   isGenerating: boolean;
-  /** True while waiting for images to finish processing before submitting. */
   isSubmitPending?: boolean;
-  /** Submit handler fired when the user commits their message. */
   onSubmit: () => void;
-  /** Cancel handler fired when the user stops an active generation. */
   onCancel: () => void;
-  /** Ref to the textarea input element for focus management. */
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
-  /** Selected text from the host app captured at activation time, if any. */
   selectedText?: string;
-  /**
-   * Called when the compact history icon is clicked in ask-bar mode.
-   * Omit to hide the history icon entirely.
-   */
   onHistoryOpen?: () => void;
-  /** Currently attached images (may still be processing in the background). */
   attachedImages: AttachedImage[];
-  /** Called when the user pastes image files. */
   onImagesAttached: (files: File[]) => void;
-  /** Called when the user removes an attached image by ID. */
   onImageRemove: (id: string) => void;
-  /** Called when the user clicks a thumbnail to preview it. */
   onImagePreview: (id: string) => void;
-  /** Called when the user clicks the screenshot capture button. */
   onScreenshot: () => void;
-  /** Called when the user taps the mic button (toggles recording). Optional — omit to hide voice input. */
   onVoiceToggle?: () => void;
-  /** Current voice input status, drives the mic button's visual state. */
   voiceStatus?: 'idle' | 'recording' | 'finishing' | 'error';
   voiceVolume?: number;
-  /** All available Ollama model names for the model picker. */
+  /** 0..1 — доля тишины до авто-отправки голосовой команды (после "туки"). */
+  autoSendFraction?: number;
   availableModels: string[];
-  /** Currently active model name. */
   activeModel: string;
-  /** Called when the user selects a different model. */
   onModelChange: (model: string) => void;
-  /** Whether safe mode is enabled for local agent tools. */
   safeMode: boolean;
-  /** Called when the user toggles safe mode. */
   onSafeModeToggle: () => void;
-  /**
-   * Drag state passed down from the root window handler.
-   * "normal" = violet ring; "max" = red ring + label; undefined = no ring.
-   */
+  agentEnabled: boolean;
+  onAgentEnabledToggle: () => void;
+  wakeWordEnabled?: boolean;
+  onWakeWordToggle?: () => void;
+  headphonesMode?: boolean;
+  onHeadphonesModeToggle?: () => void;
   isDragOver?: 'normal' | 'max';
+  /** Name of the active context profile (shown in the toolbar). */
+  activeProfileName?: string;
+  /** Called when the user clicks the profile badge to open the manager. */
+  onProfileClick?: () => void;
 }
 
-/**
- * Renders the persistent bottom input bar of the application.
- *
- * Window dragging is handled by the application root container via event
- * bubbling — mousedown events from this component propagate up naturally.
- */
 export function AskBarView({
   query,
   setQuery,
@@ -300,33 +286,32 @@ export function AskBarView({
   onVoiceToggle = () => {},
   voiceStatus = 'idle',
   voiceVolume = 0,
+  autoSendFraction = 0,
   availableModels,
   activeModel,
   onModelChange,
   safeMode,
   onSafeModeToggle,
+  agentEnabled,
+  onAgentEnabledToggle,
+  wakeWordEnabled = true,
+  onWakeWordToggle = () => {},
+  headphonesMode = false,
+  onHeadphonesModeToggle = () => {},
   isDragOver,
+  activeProfileName,
+  onProfileClick,
 }: AskBarViewProps) {
-  /** Ref to the mirror div behind the textarea for command highlighting. */
   const mirrorRef = useRef<HTMLDivElement>(null);
-
-  /** True when non-text controls should be locked — either generating or waiting for images. */
   const isBusy = isGenerating || isSubmitPending;
   const canSubmit =
     (query.trim().length > 0 || attachedImages.length > 0) && !isBusy;
   const isAtMaxImages = attachedImages.length >= MAX_IMAGES;
-
-  /** True briefly after a paste attempt is rejected because max images reached. */
   const [pasteMaxError, setPasteMaxError] = useState(false);
 
-  /** Пересчитываем высоту textarea при любом изменении query — в том числе
-   *  когда голосовой ввод дописывает текст программно. Без этого поле
-   *  остаётся однострочным при голосовом наборе. */
   useEffect(() => {
     const el = inputRef.current;
-    if (!el) {
-      return;
-    }
+    if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
   }, [query, inputRef]);
@@ -337,41 +322,19 @@ export function AskBarView({
     return () => clearTimeout(timer);
   }, [pasteMaxError]);
 
-  // ─── Command suggestion state ─────────────────────────────────────────────
-
-  /**
-   * Index of the highlighted row in the suggestion popover. Reset to 0
-   * whenever the query changes so a new filter result always starts at the top.
-   */
   const [highlightedIndex, setHighlightedIndex] = useState(0);
-
-  /**
-   * When the user presses Escape, we store the query prefix that was active at
-   * that moment. If the query later changes to a different prefix, the popover
-   * reopens automatically; if it stays the same, the popover stays dismissed.
-   * State (not ref) so that Escape triggers a re-render and hides the popover.
-   */
   const [dismissedQuery, setDismissedQuery] = useState('');
 
-  /**
-   * Finds the last word starting with "/" in the query to use as the active
-   * command prefix. This allows command suggestions to appear anywhere in the
-   * text, not just at the start.
-   */
   const rawQuery = query.trimStart();
   const lastSlashWord = useMemo(() => {
-    // Find the last word that starts with "/"
     const match = rawQuery.match(/(?:^|\s)(\/\S*)$/);
     return match ? match[1] : '';
   }, [rawQuery]);
 
   const showSuggestions =
     !isBusy && lastSlashWord.length > 0 && lastSlashWord !== dismissedQuery;
-
-  /** The active command prefix (e.g. "/sc"). Empty when not suggesting. */
   const commandPrefix = showSuggestions ? lastSlashWord : '';
 
-  /** Commands already present in the text before the current slash word. */
   const usedCommands = useMemo(() => {
     const textBeforeSlash = rawQuery.slice(
       0,
@@ -390,7 +353,6 @@ export function AskBarView({
     );
   }, [rawQuery, lastSlashWord]);
 
-  /** Commands that match the current prefix, excluding already-used ones. */
   const filteredCommands = useMemo(
     () =>
       showSuggestions
@@ -403,25 +365,14 @@ export function AskBarView({
     [showSuggestions, commandPrefix, usedCommands],
   );
 
-  // Reset the highlighted index whenever the command prefix changes
-  // (user typed more characters and the results updated).
-  /* eslint-disable @eslint-react/set-state-in-effect -- intentional: resetting
-     highlighted index when the filter prefix changes drives no secondary effects
-     and is the canonical pattern for derived-from-prop index resets. */
   useEffect(() => {
     setHighlightedIndex(0);
   }, [commandPrefix]);
-  /* eslint-enable @eslint-react/set-state-in-effect */
 
-  /**
-   * Applies the selected trigger by replacing the partial slash word at the
-   * end of the query with the full trigger + trailing space.
-   */
   const handleCommandSelect = useCallback(
     (trigger: string) => {
       setDismissedQuery('');
       setHighlightedIndex(0);
-      // Replace the partial slash word at the end with the completed trigger
       const beforeSlash = rawQuery.slice(
         0,
         rawQuery.length - lastSlashWord.length,
@@ -431,36 +382,18 @@ export function AskBarView({
     [setQuery, rawQuery, lastSlashWord],
   );
 
-  /**
-   * Auto-resizes the textarea to fit its content up to a maximum height.
-   * Single forced reflow per input event ensures responsive text wrapping.
-   * Also clears the dismissed-suggestion state so the popover can reopen
-   * if the user has changed the command prefix since dismissing it.
-   */
   const handleTextareaChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const newValue = e.target.value;
-      // Any keystroke clears the dismissed state so the popover can reopen
-      // if the user types a new "/" prefix after having pressed Escape.
       setDismissedQuery('');
       setQuery(newValue);
       const el = e.target;
-      el.style.height = 'auto'; // Reset to auto to trigger height recalculation
+      el.style.height = 'auto';
       el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
     },
     [setQuery],
   );
 
-  /**
-   * Catches `Enter` without `Shift` to submit the form proactively,
-   * avoiding accidental line breaks for power users.
-   *
-   * When the command suggestion popover is open, also handles:
-   * - ArrowDown / ArrowUp: move the highlighted row (wraps around)
-   * - Tab: complete the highlighted command trigger into the input
-   * - Enter: if a valid row is highlighted, complete it; otherwise submit
-   * - Escape: dismiss the popover without changing the query
-   */
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (showSuggestions) {
@@ -496,14 +429,11 @@ export function AskBarView({
           ) {
             const selectedTrigger = filteredCommands[highlightedIndex].trigger;
             if (lastSlashWord !== selectedTrigger) {
-              // Partial match: complete the trigger into the input.
               e.preventDefault();
               handleCommandSelect(selectedTrigger);
               return;
             }
-            // Exact match: fall through to normal submit below.
           }
-          // No match, empty list, or exact trigger already typed: submit.
         }
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -527,15 +457,11 @@ export function AskBarView({
     ],
   );
 
-  /** Syncs the mirror div scroll position with the textarea. */
   const handleTextareaScroll = useCallback(() => {
-    /* v8 ignore start -- both refs are always set by React when this fires */
     if (!mirrorRef.current || !inputRef.current) return;
-    /* v8 ignore stop */
     mirrorRef.current.scrollTop = inputRef.current.scrollTop;
   }, [inputRef]);
 
-  /** Handles clipboard paste — extracts image items from clipboardData. */
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -567,9 +493,6 @@ export function AskBarView({
     [isBusy, attachedImages.length, onImagesAttached],
   );
 
-  // Suppress the paste error label while a drag is active so the drag-state
-  // ring and label always agree. Once the drag ends, the paste error (if still
-  // within its 2 s window) reappears.
   const showMaxLabel = isDragOver === 'max' || (pasteMaxError && !isDragOver);
   const ringClass =
     isDragOver === 'max'
@@ -610,11 +533,6 @@ export function AskBarView({
           />
         </div>
       )}
-      {/* Command suggestion renders above the input row in the normal DOM
-          flow. Being inside the morphing container means the ResizeObserver
-          detects the added height and grows the native window upward to reveal
-          the popover. AnimatePresence + motion.div drive a smooth height
-          transition so the window expansion feels intentional, not jarring. */}
       <AnimatePresence>
         {showSuggestions && (
           <motion.div
@@ -647,8 +565,6 @@ export function AskBarView({
             draggable={false}
           />
 
-          {/* Compact history entry point: ask-bar mode only. In chat mode the
-            history button lives in the ConversationView header. */}
           {!isChatMode && onHistoryOpen && (
             <button
               type="button"
@@ -667,15 +583,46 @@ export function AskBarView({
             disabled={isBusy}
           />
 
+          {/* ── PROFILE: active profile badge ── */}
+          {onProfileClick && (
+            <Tooltip label={`Profile: ${activeProfileName ?? 'General'}`}>
+              <button
+                type="button"
+                onClick={onProfileClick}
+                className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 cursor-pointer outline-none"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+                  <circle cx="12" cy="7" r="4" />
+                </svg>
+              </button>
+            </Tooltip>
+          )}
+          {/* ── END PROFILE ── */}
+
           <AgentSafeToggle
             safeMode={safeMode}
             onToggle={onSafeModeToggle}
+            agentEnabled={agentEnabled}
+            onAgentEnabledToggle={onAgentEnabledToggle}
+            wakeWordEnabled={wakeWordEnabled}
+            onWakeWordToggle={onWakeWordToggle}
+            headphonesMode={headphonesMode}
+            onHeadphonesModeToggle={onHeadphonesModeToggle}
             disabled={isBusy}
           />
 
           <div className="relative flex-1 min-w-0">
-            {/* Mirror div: renders the same text with highlighted commands.
-                Sits behind the transparent textarea so colored spans show through. */}
             <div
               ref={mirrorRef}
               data-testid="askbar-mirror"
@@ -766,7 +713,7 @@ export function AskBarView({
             disabled={!canSubmit && !isBusy}
             whileHover={canSubmit || isBusy ? { scale: 1.08 } : undefined}
             whileTap={canSubmit || isBusy ? { scale: 0.92 } : undefined}
-            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-200 ${
+            className={`relative shrink-0 w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-200 ${
               isBusy
                 ? 'stop-btn-ring bg-red-500/10 text-red-400 cursor-pointer'
                 : canSubmit
@@ -781,7 +728,10 @@ export function AskBarView({
                 {STOP_ICON}
               </>
             ) : (
-              ARROW_UP_ICON
+              <>
+                {autoSendFraction > 0 && <AutoSendRing fraction={autoSendFraction} />}
+                {ARROW_UP_ICON}
+              </>
             )}
           </motion.button>
         </div>

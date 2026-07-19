@@ -17,3 +17,8 @@ export const quote = {
   /** Maximum length of selected context text included in the Ollama prompt. */
   maxContextLength: envInt('VITE_QUOTE_MAX_CONTEXT_LENGTH', 4096),
 } as const;
+
+/** localStorage key for the profiles array. */
+export const PROFILES_STORAGE_KEY = 'thuki_profiles';
+/** localStorage key for the ID of the currently active profile. */
+export const ACTIVE_PROFILE_STORAGE_KEY = 'thuki_active_profile_id';

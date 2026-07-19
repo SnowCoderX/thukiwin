@@ -8,12 +8,7 @@ repository = "https://github.com/ayzekhdawy/thukiwin"
 homepage = "https://github.com/ayzekhdawy/thukiwin"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "thuki_agent_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
@@ -59,6 +54,8 @@ windows = { version = "0.61", features = [
   "Win32_System_Com",
   "Win32_System_Memory",
   "Win32_System_Ole",
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
 ] }
 
 [dev-dependencies]

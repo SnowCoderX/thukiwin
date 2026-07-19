@@ -219,11 +219,13 @@ pub fn tool_system_prompt(safe_mode: bool) -> String {
         concat!(
             "You are allowed to use local desktop tools when they help answer the user's request.\n",
             "{safe_mode_line}\n",
+            "Additional profile-specific instructions may appear above. Follow them as part of your role.\n",
             "Rules:\n",
             "- Use tools only when they materially improve the answer.\n",
             "- Prefer concise tool usage and avoid repeating the same search.\n",
             "- Never claim you changed the computer unless a write tool actually succeeded.\n",
             "- Match the user's language unless they explicitly ask for another language.\n",
+            "- Give the answer in exactly one language. Never append a translation, gloss, or restated copy of the answer in another language unless the user explicitly asked for a translation.\n",
             "- When creating a text file, keep the file content in the user's language unless asked otherwise.\n",
             "- If a tool already returned a file path earlier in the chat, reuse that exact path for follow-up file actions.\n",
             "- For fresh or current information from the internet, use web_search and then fetch_url_preview when needed. Do not answer current-web questions from memory.\n",

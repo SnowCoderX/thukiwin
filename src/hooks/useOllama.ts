@@ -48,8 +48,6 @@ export type StreamChunk =
 /**
  * A custom hook that simplifies interactions with the local Ollama LLM.
  * It manages message history, streaming state, and sets up Rust IPC channels.
- * Voice input lives separately in `useVoiceInput`, wired up in App.tsx where
- * the input field state is, not here.
  *
  * @param onTurnComplete Optional callback invoked after a complete user/assistant
  *   turn (i.e., when the `Done` chunk is received). Receives the user message
@@ -78,6 +76,9 @@ export function useOllama(
    *   instead of displayContent. The chat bubble still shows displayContent.
    *   Used by utility slash commands to send a composed prompt template while
    *   displaying the user's original input.
+   * @param safeMode When true, restricts agent tool capabilities.
+   * @param profileSystemPrompt When provided, appended to the base system prompt
+   *   to personalize AI behavior for the active context profile.
    */
   const ask = useCallback(
     async (
@@ -87,6 +88,8 @@ export function useOllama(
       think?: boolean,
       promptOverride?: string,
       safeMode = true,
+      profileSystemPrompt?: string,
+      agentEnabled = true,   
     ) => {
       if (
         (!displayContent.trim() && (!imagePaths || imagePaths.length === 0)) ||
@@ -156,8 +159,6 @@ export function useOllama(
           updateAssistant((m) => ({ ...m, toolEvents: currentToolEvents }));
         } else if (chunk.type === 'Done') {
           setIsGenerating(false);
-          // Notify the caller that a complete turn has finished so it can
-          // persist both messages to SQLite if the conversation is saved.
           onTurnComplete?.(userMsg, {
             ...assistantMsg,
             content: currentContent,
@@ -166,13 +167,11 @@ export function useOllama(
               currentToolEvents.length > 0 ? currentToolEvents : undefined,
           });
         } else if (chunk.type === 'Cancelled') {
-          // Remove the empty assistant placeholder if nothing was generated.
           if (!currentContent && !currentThinkingContent) {
             setMessages((prev) => prev.filter((m) => m.id !== assistantId));
           }
           setIsGenerating(false);
         } else {
-          // Replace the streaming placeholder with an error message.
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
@@ -199,6 +198,8 @@ export function useOllama(
           imagePaths: imagePaths && imagePaths.length > 0 ? imagePaths : null,
           think: think ?? false,
           safeMode,
+          agentEnabled,                  // ← новое, camelCase — как договорились с profileSystemPrompt
+          profileSystemPrompt: profileSystemPrompt ?? null,
           onEvent: channel,
         });
       } catch {

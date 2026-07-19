@@ -2,10 +2,22 @@
  * Голосовой ввод в реальном времени: запись с микрофона по умолчанию через
  * cpal, локальная транскрибация через whisper-rs. Ничего не уходит с машины.
  *
- * Пока идёт запись, фоновый поток режет звук по паузам тишины (~1.0с) и шлёт
- * готовые куски текста во фронт событием thuki://voice-chunk, по мере
- * расшифровки. Финальный кусок после нажатия "стоп" приходит отдельным
- * событием с is_final: true.
+ * Два режима записи:
+ * - Ручной (Ctrl зажат): фоновый поток режет звук по паузам тишины (~1.0с) и
+ *   шлёт готовые куски текста во фронт событием thuki://voice-chunk по мере
+ *   расшифровки — они ложатся в текстовое поле. Финальный кусок после
+ *   отпускания Ctrl приходит отдельным событием с is_final: true и пустым
+ *   текстом (весь текст уже был отправлен по кускам).
+ * - Авто (после wake-word "туки"): вся фраза копится целиком, распознаётся
+ *   одним проходом после ~1.2с тишины, и финальное событие содержит is_final:
+ *   true с ПОЛНЫМ текстом — фронт сразу вызывает ask(), без участия
+ *   текстового поля. Пока идёт тишина после речи, шлётся событие
+ *   thuki://voice-countdown с долей (0..1) до авто-отправки — им управляется
+ *   кольцо на кнопке отправки в UI.
+ *
+ * В обоих режимах, пока запись активна, фоновый wake-word слушатель
+ * (wakeword.rs) отпускает микрофон (см. `suppressed` в WakeWordState),
+ * чтобы не конкурировать за устройство с этим модулем.
  */
 
 use std::path::PathBuf;
@@ -27,6 +39,16 @@ const SILENCE_RMS_THRESHOLD: f32 = 0.005;
 const POLL_INTERVAL_MS: u64 = 150;
 const VOICE_CHUNK_EVENT: &str = "thuki://voice-chunk";
 const VOICE_LEVEL_EVENT: &str = "thuki://voice-level";
+const VOICE_COUNTDOWN_EVENT: &str = "thuki://voice-countdown";
+
+/// Тишина, после которой авто-сессия (запущенная wake-word'ом) считается
+/// законченной и текст уходит в ask() без участия пользователя.
+const AUTO_SUBMIT_SILENCE_SECS: f64 = 1.2;
+
+/// Короче обычной — используется, когда вопрос уже целиком пришёл вместе
+/// с "туки" (prefix_text не пуст) и новой речи в этой сессии ещё не было:
+/// ждать полную секунду незачем, скорее всего, ничего больше не скажут.
+const AUTO_SUBMIT_SILENCE_SECS_PREFIX_ONLY: f64 = 0.35;
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -43,6 +65,14 @@ struct VoiceChunkPayload {
 struct VoiceLevelPayload {
     session_id: u64,
     level: f32,
+}
+
+/// Событие с долей (0..1) до авто-отправки — только для авто-сессий,
+/// растёт по мере того как длится тишина после последней сказанной фразы.
+#[derive(Clone, serde::Serialize)]
+struct VoiceCountdownPayload {
+    session_id: u64,
+    fraction: f64,
 }
 
 /// Состояние голосового ввода, хранится в app.manage().
@@ -102,7 +132,13 @@ impl VoiceState {
 }
 
 #[tauri::command]
-pub async fn start_voice_recording(app: AppHandle, state: State<'_, VoiceState>) -> Result<(), String> {
+pub async fn start_voice_recording(
+    app: AppHandle,
+    state: State<'_, VoiceState>,
+    wake_word: State<'_, crate::wakeword::WakeWordState>,
+    auto_submit: Option<bool>,
+    prefix_text: Option<String>,
+) -> Result<(), String> {
     {
         let guard = state.recording.lock().map_err(|e| e.to_string())?;
         if guard.is_some() {
@@ -110,9 +146,16 @@ pub async fn start_voice_recording(app: AppHandle, state: State<'_, VoiceState>)
         }
     }
 
+    let auto_submit = auto_submit.unwrap_or(false);
+    let prefix_text = prefix_text.unwrap_or_default();
+    let suppressed_flag = wake_word.suppressed.clone();
+
     let ctx = state.get_or_load_context()?;
     let session_id = NEXT_SESSION_ID.fetch_add(1, Ordering::SeqCst);
-    eprintln!("voice: начинаем сессию #{}", session_id);
+    eprintln!(
+        "voice: начинаем сессию #{} (auto_submit={})",
+        session_id, auto_submit
+    );
 
     let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -137,21 +180,46 @@ pub async fn start_voice_recording(app: AppHandle, state: State<'_, VoiceState>)
 
     eprintln!("voice: микрофон инициализирован, sample_rate={}", sample_rate);
 
+    // Пока идёт запись (ручная или авто), фоновый wake-word слушатель
+    // отпускает микрофон — иначе два потока cpal будут конкурировать за устройство.
+    suppressed_flag.store(true, Ordering::SeqCst);
+
     let processing_app = app.clone();
     let processing_buffer = buffer.clone();
     let processing_stop = stop_flag.clone();
     let processing_discard = discard_flag.clone();
-    let processing_handle = std::thread::spawn(move || {
-        run_processing_thread(
-            processing_app,
-            ctx,
-            processing_buffer,
-            sample_rate,
-            processing_stop,
-            processing_discard,
-            session_id,
-        );
-    });
+
+    let processing_handle = if auto_submit {
+        let auto_suppressed_flag = suppressed_flag.clone();
+        let recording_slot = state.recording.clone();
+        std::thread::spawn(move || {
+            run_auto_submit_processing_thread(
+                processing_app,
+                ctx,
+                processing_buffer,
+                sample_rate,
+                processing_stop,
+                processing_discard,
+                session_id,
+                prefix_text,
+                auto_suppressed_flag,
+                recording_slot,
+            );
+        })
+    } else {
+        std::thread::spawn(move || {
+            run_processing_thread(
+                processing_app,
+                ctx,
+                processing_buffer,
+                sample_rate,
+                processing_stop,
+                processing_discard,
+                session_id,
+                suppressed_flag,
+            );
+        })
+    };
 
     let mut guard = state.recording.lock().map_err(|e| e.to_string())?;
     *guard = Some(ActiveRecording {
@@ -205,7 +273,7 @@ pub async fn cancel_voice_recording(state: State<'_, VoiceState>) -> Result<(), 
 }
 
 /// Конвертирует i16 сэмплы в f32 (-1.0..1.0).
-fn i16_to_f32(data: &[i16]) -> Vec<f32> {
+pub(crate) fn i16_to_f32(data: &[i16]) -> Vec<f32> {
     data.iter().map(|&s| s as f32 / i16::MAX as f32).collect()
 }
 
@@ -224,7 +292,11 @@ fn u32_to_f32(data: &[u32]) -> Vec<f32> {
     data.iter().map(|&s| (s as f32 / u32::MAX as f32) * 2.0 - 1.0).collect()
 }
 
-fn run_capture_thread(buffer: Arc<Mutex<Vec<f32>>>, ready_tx: Sender<u32>, stop_flag: Arc<AtomicBool>) {
+/// Открывает микрофон по умолчанию и пишет сэмплы (в f32, моно) в `buffer`
+/// до сигнала `stop_flag`. Публичный на уровне крейта — переиспользуется
+/// фоновым wake-word слушателем (wakeword.rs), чтобы не дублировать код
+/// работы с cpal для всех форматов сэмплов.
+pub(crate) fn run_capture_thread(buffer: Arc<Mutex<Vec<f32>>>, ready_tx: Sender<u32>, stop_flag: Arc<AtomicBool>) {
     let host = cpal::default_host();
 
     let device = match host.default_input_device() {
@@ -351,7 +423,8 @@ fn run_capture_thread(buffer: Arc<Mutex<Vec<f32>>>, ready_tx: Sender<u32>, stop_
     drop(stream);
 }
 
-fn push_samples_f32(buffer: &Arc<Mutex<Vec<f32>>>, data: &[f32], channels: usize) {
+/// Публичная на уровне крейта — переиспользуется wake-word слушателем.
+pub(crate) fn push_samples_f32(buffer: &Arc<Mutex<Vec<f32>>>, data: &[f32], channels: usize) {
     let mut buf = match buffer.lock() {
         Ok(b) => b,
         Err(_) => return,
@@ -367,6 +440,11 @@ fn push_samples_f32(buffer: &Arc<Mutex<Vec<f32>>>, data: &[f32], channels: usize
     }
 }
 
+/// Ручной режим (Ctrl зажат): режет речь по паузам ~1.0с, шлёт каждый кусок
+/// во фронт по мере расшифровки (ложится в текстовое поле). Не изменился по
+/// поведению — только получил `suppressed_flag`, который снимает в конце,
+/// возвращая микрофон фоновому wake-word слушателю.
+#[allow(clippy::too_many_arguments)]
 fn run_processing_thread(
     app: AppHandle,
     ctx: Arc<WhisperContext>,
@@ -375,6 +453,7 @@ fn run_processing_thread(
     stop_flag: Arc<AtomicBool>,
     discard_flag: Arc<AtomicBool>,
     session_id: u64,
+    suppressed_flag: Arc<AtomicBool>,
 ) {
     let window_samples = ((sample_rate as f64) * 0.15) as usize;
     let mut last_cut: usize = 0;
@@ -382,7 +461,6 @@ fn run_processing_thread(
     let mut last_level_emit = std::time::Instant::now();
     let mut total_samples: usize = 0;
     let mut chunks_emitted: usize = 0;
-    let mut last_emitted_text: String = String::new();
 
     loop {
         std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
@@ -430,8 +508,10 @@ fn run_processing_thread(
 
             if !discard_flag.load(Ordering::SeqCst) {
                 if let Ok(text) = transcribe_chunk(&ctx, &chunk, sample_rate) {
-                    if !text.is_empty() && text != last_emitted_text {
-                        last_emitted_text = text.clone();
+                    if !text.is_empty() {
+                        // Не сравниваем с last_emitted_text — whisper с no_context может
+                        // давать разные результаты для одного и того же аудио из-за
+                        // случайности в сэмплировании (даже при temperature=0).
                         let _ = app.emit(VOICE_CHUNK_EVENT, VoiceChunkPayload { session_id, text, is_final: false });
                         chunks_emitted += 1;
                     }
@@ -451,92 +531,184 @@ fn run_processing_thread(
     eprintln!("voice: [#{}] остановка. total_samples={}, chunks={}, discarded={}, tail={:.2}s",
               session_id, total_samples, chunks_emitted, discarded, tail_secs);
 
-    if discarded {
-        eprintln!("voice: [#{}] отправляем пустой финальный чанк (discarded)", session_id);
-        let _ = app.emit(
-            VOICE_CHUNK_EVENT,
-            VoiceChunkPayload {
-                session_id,
-                text: String::new(),
-                is_final: true,
-            },
-        );
-        return;
-    }
-
-    // При остановке (stop/cancel) транскрибируем ВСЁ накопленное аудио как один чанк,
-    // а не только хвост после last_cut. Это решает проблему обрезания текста
-    // когда пользователь отпускает Ctrl раньше 1 секунды тишины.
-    if final_len > 0 {
-        let full_audio = buffer.lock().map(|b| b[..final_len].to_vec()).unwrap_or_default();
-        eprintln!("voice: [#{}] финальная транскрибация: {} samples total", session_id, full_audio.len());
-        match transcribe_chunk(&ctx, &full_audio, sample_rate) {
-            Ok(text) => {
-                let final_text = if text == last_emitted_text {
-                    // Если полная транскрибация дала тот же результат что и последний чанк —
-                    // значит новых слов не добавилось, отправляем пустой is_final
-                    String::new()
-                } else {
-                    text
-                };
-                eprintln!("voice: [#{}] финальный результат: '{}'", session_id, final_text);
-                let _ = app.emit(VOICE_CHUNK_EVENT, VoiceChunkPayload { session_id, text: final_text, is_final: true });
-            }
-            Err(e) => {
-                eprintln!("voice: [#{}] ошибка финальной транскрибации: {e}", session_id);
-                let _ = app.emit(VOICE_CHUNK_EVENT, VoiceChunkPayload { session_id, text: String::new(), is_final: true });
-            }
-        }
+    // Обрабатываем оставшийся аудио после last_cut — это последние слова,
+    // сказанные пользователем перед отпусканием Ctrl (без паузы в 1 секунду).
+    let remaining = if !discarded && final_len > last_cut {
+        let chunk = buffer.lock().map(|b| b[last_cut..final_len].to_vec()).unwrap_or_default();
+        eprintln!("voice: [#{}] финальная нарезка: {} samples", session_id, chunk.len());
+        chunk
     } else {
-        eprintln!("voice: [#{}] отправляем пустой финальный чанк (нет аудио)", session_id);
-        let _ = app.emit(
-            VOICE_CHUNK_EVENT,
-            VoiceChunkPayload {
-                session_id,
-                text: String::new(),
-                is_final: true,
-            },
-        );
-    }
-}
+        Vec::new()
+    };
 
-fn emit_chunk(
-    app: &AppHandle,
-    ctx: &WhisperContext,
-    chunk: &[f32],
-    sample_rate: u32,
-    is_final: bool,
-    session_id: u64,
-) {
-    let start = std::time::Instant::now();
-    match transcribe_chunk(ctx, chunk, sample_rate) {
-        Ok(text) => {
-            eprintln!(
-                "voice: [#{}] чанк {} мс -> '{}' (транскрибация заняла {:?})",
-                session_id,
-                chunk.len() * 1000 / sample_rate as usize,
-                text,
-                start.elapsed()
-            );
-            let _ = app.emit(VOICE_CHUNK_EVENT, VoiceChunkPayload { session_id, text, is_final });
-        }
-        Err(e) => {
-            eprintln!("voice: [#{}] ошибка транскрибации: {e}", session_id);
-            if is_final {
-                let _ = app.emit(
-                    VOICE_CHUNK_EVENT,
-                    VoiceChunkPayload {
-                        session_id,
-                        text: String::new(),
-                        is_final: true,
-                    },
-                );
+    if !remaining.is_empty() {
+        if let Ok(text) = transcribe_chunk(&ctx, &remaining, sample_rate) {
+            if !text.is_empty() {
+                let _ = app.emit(VOICE_CHUNK_EVENT, VoiceChunkPayload { session_id, text: text.clone(), is_final: false });
+                eprintln!("voice: [#{}] последний чанк отправлен: '{}'", session_id, text);
             }
         }
     }
+
+    // Финальный сигнал — запись закончена, текст пустой (весь текст уже отправлен)
+    eprintln!("voice: [#{}] сессия завершена (discarded={})", session_id, discarded);
+    let _ = app.emit(
+        VOICE_CHUNK_EVENT,
+        VoiceChunkPayload {
+            session_id,
+            text: String::new(),
+            is_final: true,
+        },
+    );
+
+    // Возвращаем микрофон фоновому wake-word слушателю.
+    suppressed_flag.store(false, Ordering::SeqCst);
 }
 
-fn resample_to_16k(samples: &[f32], input_rate: u32) -> Vec<f32> {
+/// Авто-режим (запущен wake-word'ом "туки"): не режет на промежуточные
+/// куски — копит всю фразу, ждёт `AUTO_SUBMIT_SILENCE_SECS` тишины после
+/// последней сказанной части, затем распознаёт ОДНИМ проходом и шлёт полный
+/// текст как is_final — фронт сразу отправляет его в ask(), без текстового
+/// поля. Параллельно шлёт thuki://voice-countdown с долей (0..1) оставшейся
+/// тишины до отправки, чтобы UI мог показать обратный отсчёт на кнопке.
+#[allow(clippy::too_many_arguments)]
+fn run_auto_submit_processing_thread(
+    app: AppHandle,
+    ctx: Arc<WhisperContext>,
+    buffer: Arc<Mutex<Vec<f32>>>,
+    sample_rate: u32,
+    stop_flag: Arc<AtomicBool>,
+    discard_flag: Arc<AtomicBool>,
+    session_id: u64,
+    prefix_text: String,
+    suppressed_flag: Arc<AtomicBool>,
+    recording_slot: Arc<Mutex<Option<ActiveRecording>>>,
+) {
+    let window_samples = ((sample_rate as f64) * 0.15) as usize;
+    let mut voiced_until: usize = 0;
+    let mut last_countdown_emit = std::time::Instant::now();
+    let mut last_level_emit = std::time::Instant::now();
+
+    // Если вся команда уже была сказана вместе с "туки" в одно дыхание, она
+    // целиком уехала в prefix_text ещё в wakeword.rs, и в этой сессии может
+    // не быть вообще никакой новой речи. Без этого has_speech никогда не
+    // станет true и авто-остановка по тишине не сработает никогда.
+    let has_prefix = !prefix_text.trim().is_empty();
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
+        let stopping = stop_flag.load(Ordering::SeqCst);
+
+        let snapshot_len = buffer.lock().map(|b| b.len()).unwrap_or(0);
+
+        if last_level_emit.elapsed().as_millis() >= 50 {
+            last_level_emit = std::time::Instant::now();
+            let level = if snapshot_len > window_samples {
+                buffer.lock().map(|b| rms_of(&b[snapshot_len - window_samples..snapshot_len])).unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            let _ = app.emit(VOICE_LEVEL_EVENT, VoiceLevelPayload { session_id, level });
+        }
+
+        if snapshot_len > voiced_until {
+            let tail_start = snapshot_len.saturating_sub(window_samples);
+            let rms = buffer.lock().map(|b| rms_of(&b[tail_start..snapshot_len])).unwrap_or(0.0);
+            if rms > SILENCE_RMS_THRESHOLD {
+                voiced_until = snapshot_len;
+            }
+        }
+
+        let silence_secs = (snapshot_len.saturating_sub(voiced_until)) as f64 / sample_rate as f64;
+        let has_speech = voiced_until >= (sample_rate as f64 * MIN_CHUNK_SECS.min(0.3)) as usize;
+
+        // Обратный отсчёт для кольца на кнопке отправки — растёт только
+        // когда есть тишина ПОСЛЕ уже сказанной речи.
+        if last_countdown_emit.elapsed().as_millis() >= 100 {
+            last_countdown_emit = std::time::Instant::now();
+            let fraction = if has_speech {
+                (silence_secs / AUTO_SUBMIT_SILENCE_SECS).min(1.0)
+            } else {
+                0.0
+            };
+            let _ = app.emit(VOICE_COUNTDOWN_EVENT, VoiceCountdownPayload { session_id, fraction });
+        }
+
+        let auto_stop = if has_prefix && !has_speech {
+            silence_secs >= AUTO_SUBMIT_SILENCE_SECS_PREFIX_ONLY
+        } else {
+            (has_speech || has_prefix) && silence_secs >= AUTO_SUBMIT_SILENCE_SECS
+        };
+
+        if stopping || auto_stop {
+            if auto_stop {
+                eprintln!("voice: [#{}] авто-сессия: тишина {:.2}с, завершаем", session_id, silence_secs);
+            }
+            // Сигналим потоку захвата остановиться. При обычном stop/cancel это
+            // уже сделала вызывающая команда, но при само-завершении по тишине
+            // (auto_stop) этого никто больше не делает, без этой строки
+            // микрофон и cpal-поток продолжат работать в фоне бесконечно.
+            stop_flag.store(true, Ordering::SeqCst);
+            break;
+        }
+    }
+
+    let discarded = discard_flag.load(Ordering::SeqCst);
+    let final_len = buffer.lock().map(|b| b.len()).unwrap_or(0);
+    let end = voiced_until.min(final_len);
+
+    // Если новой речи в этой сессии нет (end == 0), но prefix_text не пуст —
+    // значит команда была сказана целиком вместе с "туки" ещё до старта этой
+    // сессии (см. wakeword.rs::match_wake_word). Отправляем prefix_text как есть.
+    // Если и prefix_text пуст — действительно ничего не было сказано, шлём пусто.
+    let combined = if discarded {
+        String::new()
+    } else if end == 0 {
+        // Новой речи в этой сессии нет — либо вся команда уже целиком уехала
+        // в prefix_text (сказано одним дыханием вместе с "туки"), либо
+        // действительно ничего не сказано (тогда prefix_text тоже пуст).
+        prefix_text.trim().to_string()
+    } else {
+        let audio = buffer.lock().map(|b| b[..end].to_vec()).unwrap_or_default();
+        let heard = transcribe_chunk(&ctx, &audio, sample_rate).unwrap_or_default();
+        if prefix_text.trim().is_empty() {
+            heard
+        } else if heard.trim().is_empty() {
+            prefix_text.clone()
+        } else {
+            format!("{} {}", prefix_text.trim(), heard.trim())
+        }
+    };
+
+    eprintln!("voice: [#{}] авто-сессия завершена, текст='{}'", session_id, combined);
+
+    let _ = app.emit(
+        VOICE_CHUNK_EVENT,
+        VoiceChunkPayload {
+            session_id,
+            text: combined,
+            is_final: true,
+        },
+    );
+
+    // Возвращаем микрофон фоновому wake-word слушателю.
+    suppressed_flag.store(false, Ordering::SeqCst);
+
+    // Сессия завершилась сама (по тишине), а не через явный stop/cancel,
+    // значит никто ещё не убрал её из VoiceState.recording. Без этого
+    // следующий start_voice_recording будет вечно получать "запись уже
+    // идёт", даже когда на самом деле уже ничего не происходит. Сверяем
+    // session_id на случай (маловероятной) гонки с уже новой сессией.
+    if let Ok(mut guard) = recording_slot.lock() {
+        let is_still_mine = matches!(guard.as_ref(), Some(active) if active.session_id == session_id);
+        if is_still_mine {
+            *guard = None;
+        }
+    }
+}
+
+/// Публичная на уровне крейта — переиспользуется wake-word слушателем.
+pub(crate) fn resample_to_16k(samples: &[f32], input_rate: u32) -> Vec<f32> {
     if samples.is_empty() || input_rate == TARGET_SAMPLE_RATE {
         return samples.to_vec();
     }
@@ -559,7 +731,8 @@ fn resample_to_16k(samples: &[f32], input_rate: u32) -> Vec<f32> {
     out
 }
 
-fn rms_of(samples: &[f32]) -> f32 {
+/// Публичная на уровне крейта — переиспользуется wake-word слушателем.
+pub(crate) fn rms_of(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
     }
@@ -567,9 +740,6 @@ fn rms_of(samples: &[f32]) -> f32 {
     (sum_sq / samples.len() as f32).sqrt()
 }
 
-/// Гоняет whisper.cpp на одном куске сэмплов. Создаёт свой WhisperState
-/// для каждого чанка — это медленнее, но гарантирует отсутствие "памяти"
-/// между чанками и устраняет дублирование текста.
 /// Список фраз-галлюцинаций, которые whisper любит добавлять в конце.
 /// Проверяем в нижнем регистре, удаляем в оригинальном.
 static HALLUCINATION_PATTERNS: &[&str] = &[
@@ -610,10 +780,27 @@ fn strip_hallucinations(text: &str) -> String {
     result
 }
 
+/// Простая эвристика: проверяет, не похож ли текст на мусор (много повторов одного символа и т.д.)
+fn looks_like_gibberish(text: &str) -> bool {
+    if text.is_empty() {
+        return true;
+    }
+    // Если текст состоит из одного символа, повторённого много раз — мусор
+    let first_char = text.chars().next().unwrap();
+    if text.chars().all(|c| c == first_char) && text.len() > 3 {
+        return true;
+    }
+    // Если нет ни одной буквы — мусор
+    if !text.chars().any(|c| c.is_alphabetic()) {
+        return true;
+    }
+    false
+}
+
 /// Распознаёт речь с приоритетом на русский и английский.
 /// Стратегия: запускаем auto-detect, но если результат короткий или похож на мусор —
 /// пробуем явно ru и en, выбирая лучший.
-fn transcribe_chunk(ctx: &WhisperContext, samples: &[f32], sample_rate: u32) -> Result<String, String> {
+pub(crate) fn transcribe_chunk(ctx: &WhisperContext, samples: &[f32], sample_rate: u32) -> Result<String, String> {
     if samples.is_empty() {
         return Ok(String::new());
     }
@@ -663,25 +850,9 @@ fn transcribe_chunk(ctx: &WhisperContext, samples: &[f32], sample_rate: u32) -> 
     Ok(result)
 }
 
-/// Простая эвристика: проверяет, не похож ли текст на мусор (много повторов одного символа и т.д.)
-fn looks_like_gibberish(text: &str) -> bool {
-    if text.is_empty() {
-        return true;
-    }
-    // Если текст состоит из одного символа, повторённого много раз — мусор
-    let first_char = text.chars().next().unwrap();
-    if text.chars().all(|c| c == first_char) && text.len() > 3 {
-        return true;
-    }
-    // Если нет ни одной буквы — мусор
-    if !text.chars().any(|c| c.is_alphabetic()) {
-        return true;
-    }
-    false
-}
-
-/// Один проход распознавания. Возвращает текст.
-fn run_whisper_pass(
+/// Один проход распознавания. Возвращает текст. Публичная на уровне крейта —
+/// переиспользуется wake-word слушателем (со своей, меньшей моделью).
+pub(crate) fn run_whisper_pass(
     ctx: &WhisperContext,
     samples: &[f32],
     force_lang: Option<&str>,

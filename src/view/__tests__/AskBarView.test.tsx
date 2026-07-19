@@ -30,6 +30,12 @@ const IMAGE_DEFAULTS = {
   onModelChange: vi.fn(),
   safeMode: true,
   onSafeModeToggle: vi.fn(),
+  agentEnabled: true,
+  onAgentEnabledToggle: vi.fn(),
+  wakeWordEnabled: true,
+  onWakeWordToggle: vi.fn(),
+  headphonesMode: false,
+  onHeadphonesModeToggle: vi.fn(),
 };
 
 describe('AskBarView', () => {
