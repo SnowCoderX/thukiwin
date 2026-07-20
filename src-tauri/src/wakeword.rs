@@ -50,7 +50,7 @@ const PAUSE_CHECK_INTERVAL_MS: u64 = 250;
 const WAKE_WORD_CANDIDATES_RU: &[&str] = &["туки", "туку", "тука", "тьюки"];
 /// Кандидаты на то же слово на слух при принудительном en — то, как оно
 /// может транслитерироваться латиницей на слух модели.
-const WAKE_WORD_CANDIDATES_EN: &[&str] = &["thuki", "tuki", "tooky", "tookie", "chuki"];
+const WAKE_WORD_CANDIDATES_EN: &[&str] = &["thuki", "tuki", "tooky", "tookie", "chuki", "2k", "2ki"];
 const MAX_EDIT_DISTANCE: usize = 2;
 
 const WAKE_WORD_EVENT: &str = "thuki://wake-word";

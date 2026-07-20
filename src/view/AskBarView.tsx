@@ -1,6 +1,8 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { availableMonitors } from '@tauri-apps/api/window';
+import type { Monitor } from '@tauri-apps/api/window';
 import { formatQuotedText } from '../utils/formatQuote';
 import { quote } from '../config';
 import { ImageThumbnails } from '../components/ImageThumbnails';
@@ -244,6 +246,13 @@ interface AskBarViewProps {
   onImageRemove: (id: string) => void;
   onImagePreview: (id: string) => void;
   onScreenshot: () => void;
+  /**
+   * Right-click on the screenshot button: captures a specific monitor
+   * instead of "wherever the app window currently is". Optional so callers
+   * that don't wire it up just don't get the context menu (button falls
+   * back to left-click-only behaviour).
+   */
+  onScreenshotRegion?: (monitor: { x: number; y: number; width: number; height: number }) => void;
   onVoiceToggle?: () => void;
   voiceStatus?: 'idle' | 'recording' | 'finishing' | 'error';
   voiceVolume?: number;
@@ -283,6 +292,7 @@ export function AskBarView({
   onImageRemove,
   onImagePreview,
   onScreenshot,
+  onScreenshotRegion,
   onVoiceToggle = () => {},
   voiceStatus = 'idle',
   voiceVolume = 0,
@@ -324,6 +334,87 @@ export function AskBarView({
 
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const [dismissedQuery, setDismissedQuery] = useState('');
+
+  /**
+   * Right-click monitor picker for the screenshot button. `availableMonitors()`
+   * comes straight from `@tauri-apps/api/window` — physical position/size,
+   * exactly what `capture_screen_region_command` on the Rust side expects, so
+   * no unit conversion is needed here.
+   */
+  const [monitorMenu, setMonitorMenu] = useState<{
+    left: number;
+    top: number;
+    monitors: Monitor[];
+  } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!monitorMenu) return;
+    const close = () => setMonitorMenu(null);
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') close();
+    };
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [monitorMenu]);
+
+  useLayoutEffect(() => {
+    if (!menuRef.current || !monitorMenu) return;
+    const rect = menuRef.current.getBoundingClientRect();
+    let left = monitorMenu.left;
+    let top = monitorMenu.top;
+
+    // Flip right if overflows
+    if (left + rect.width > window.innerWidth - 8) {
+      left = window.innerWidth - rect.width - 8;
+    }
+    // Flip up if overflows bottom
+    if (top + rect.height > window.innerHeight - 8) {
+      top = monitorMenu.top - rect.height - 4;
+    }
+    // Clamp to viewport
+    left = Math.max(8, left);
+    top = Math.max(8, top);
+
+    menuRef.current.style.left = `${left}px`;
+    menuRef.current.style.top = `${top}px`;
+    menuRef.current.style.visibility = 'visible';
+  }, [monitorMenu]);
+
+  const handleScreenshotContextMenu = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault();
+      if (isBusy || isAtMaxImages || !onScreenshotRegion) return;
+      const monitors = await availableMonitors();
+      // Один монитор — правый клик ничем не отличался бы от левого, не
+      // засоряем UI меню-на-один-пункт.
+      if (monitors.length <= 1) {
+        onScreenshot();
+        return;
+      }
+      setMonitorMenu({ left: e.clientX, top: e.clientY, monitors });
+    },
+    [isBusy, isAtMaxImages, onScreenshotRegion, onScreenshot],
+  );
+
+  const handleMonitorPick = useCallback(
+    (monitor: Monitor) => {
+      setMonitorMenu(null);
+      onScreenshotRegion?.({
+        x: monitor.position.x,
+        y: monitor.position.y,
+        width: monitor.size.width,
+        height: monitor.size.height,
+      });
+    },
+    [onScreenshotRegion],
+  );
 
   const rawQuery = query.trimStart();
   const lastSlashWord = useMemo(() => {
@@ -694,10 +785,11 @@ export function AskBarView({
               </button>
             </Tooltip>
           ) : (
-            <Tooltip label="Take a screenshot">
+            <Tooltip label="Take a screenshot (right-click to choose a monitor)">
               <button
                 type="button"
                 onClick={onScreenshot}
+                onContextMenu={handleScreenshotContextMenu}
                 disabled={isBusy}
                 aria-label="Take screenshot"
                 className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/8 transition-colors duration-150 disabled:opacity-40 disabled:cursor-default cursor-pointer"
@@ -736,6 +828,25 @@ export function AskBarView({
           </motion.button>
         </div>
       </div>
+      {monitorMenu && (
+        <div
+          ref={menuRef}
+          className="fixed z-50 rounded-lg border border-surface-border bg-surface-base shadow-chat py-1 min-w-[200px]"
+          style={{ left: monitorMenu.left, top: monitorMenu.top, visibility: 'hidden' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {monitorMenu.monitors.map((m, i) => (
+            <button
+              key={`${m.name ?? 'monitor'}-${i}`}
+              type="button"
+              onClick={() => handleMonitorPick(m)}
+              className="w-full text-left px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-white/8"
+            >
+              {m.name ?? `Монитор ${i + 1}`} — {m.size.width}×{m.size.height}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

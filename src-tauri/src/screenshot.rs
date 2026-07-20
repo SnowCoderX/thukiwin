@@ -530,3 +530,52 @@ pub async fn capture_screenshot_command(
 ) -> Result<Option<String>, String> {
     crate::windows_screenshot::capture_screenshot_command(app_handle).await
 }
+
+#[cfg(target_os = "windows")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn capture_desktop_for_selection(app_handle: tauri::AppHandle) -> Result<String, String> {
+    crate::windows_screenshot::capture_desktop_for_selection(app_handle).await
+}
+
+/// Captures an explicit monitor/region, given physical coordinates the
+/// frontend already has from `availableMonitors()` (see the screenshot
+/// button's right-click menu in `AskBarView.tsx`).
+#[cfg(target_os = "windows")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn capture_screen_region_command(
+    app_handle: tauri::AppHandle,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
+    crate::windows_screenshot::capture_screen_region_command(app_handle, x, y, width, height).await
+}
+/// Captures a specific monitor by index (for the right-click "choose monitor" menu).
+#[cfg(target_os = "windows")]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[cfg_attr(not(coverage), tauri::command)]
+pub async fn capture_monitor_command(
+    app_handle: tauri::AppHandle,
+    monitor_index: usize,
+) -> Result<String, String> {
+    let monitors = app_handle
+        .available_monitors()
+        .map_err(|e| e.to_string())?;
+    let monitor = monitors.get(monitor_index).ok_or_else(|| {
+        format!("Monitor with index {} does not exist", monitor_index)
+    })?;
+
+    let pos = monitor.position();
+    let size = monitor.size();
+
+    capture_screen_region_command(
+        app_handle,
+        pos.x,
+        pos.y,
+        size.width,
+        size.height,
+    ).await
+}

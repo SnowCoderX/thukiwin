@@ -34,6 +34,7 @@ import './App.css';
 import { useProfiles } from './hooks/useProfiles';
 import { ProfileManagerPanel } from './components/ProfileManagerPanel';
 import { RegionWatchPanel } from './components/RegionWatchPanel';
+import RegionSelect from './components/RegionSelect'; // путь подстрой под себя
 
 /** Fallback model name used before get_model_config resolves at startup. */
 const DEFAULT_MODEL_FALLBACK = 'gemini-3-flash-preview';
@@ -134,6 +135,12 @@ function App() {
   /** Non-null when the backend signals onboarding is needed; holds the current stage. */
   const [onboardingStage, setOnboardingStage] =
     useState<OnboardingStage | null>(null);
+
+  const [windowLabel, setWindowLabel] = useState('');
+
+  useEffect(() => {
+    setWindowLabel(getCurrentWindow().label);
+  }, []);
 
     
   /**
@@ -1057,6 +1064,32 @@ function App() {
     ]);
   }, [attachedImages]);
 
+  /**
+   * Same as `handleScreenshot`, but for an explicit monitor rect picked from
+   * the screenshot button's right-click menu (see `AskBarView`'s
+   * `onScreenshotRegion` — it reads `availableMonitors()` itself and passes
+   * back physical x/y/width/height, so this just forwards to the
+   * coordinate-based capture command instead of the "wherever this window
+   * currently is" one.
+   */
+  const handleScreenshotRegion = useCallback(
+    async (monitor: { x: number; y: number; width: number; height: number }) => {
+      if (attachedImages.length >= MAX_IMAGES) return;
+      const filePath = await invoke<string>('capture_screen_region_command', monitor);
+      if (!filePath) return;
+      const assetUrl = convertFileSrc(filePath);
+      setAttachedImages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          blobUrl: assetUrl,
+          filePath,
+        },
+      ]);
+    },
+    [attachedImages],
+  );
+
   /** Removes an attached image from state, revokes the blob URL, and
    *  deletes the staged file from disk if processing completed. */
   const handleImageRemove = useCallback((id: string) => {
@@ -1877,6 +1910,11 @@ function App() {
     );
   }, []);
 
+  // Render the region-selection overlay when this is the region-select window.
+  if (windowLabel === 'region-select') {
+    return <RegionSelect />;
+  }
+
   if (onboardingStage !== null) {
     return (
       <OnboardingView
@@ -2089,6 +2127,7 @@ function App() {
                   onImageRemove={handleImageRemove}
                   onImagePreview={handleAskBarImagePreview}
                   onScreenshot={handleScreenshot}
+                  onScreenshotRegion={handleScreenshotRegion}
                   onVoiceToggle={toggleVoiceInput}
                   voiceStatus={voiceStatus}
                   voiceVolume={voiceVolume}

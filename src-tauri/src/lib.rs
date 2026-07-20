@@ -388,8 +388,20 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
             y: p.y + mon_y,
         };
 
-        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-            global.x, global.y,
+        // NOTE: `global.x/y` were computed entirely from `monitor.position()`/
+        // `monitor.size()`, which Tauri reports in PHYSICAL pixels — so this
+        // must be set as a Physical position, not Logical. Passing it as
+        // Logical made Tauri multiply it by the window's scale_factor before
+        // applying it, which is a no-op only at 100% DPI. At any other scale
+        // (125%/150%, common on Windows) the window lands somewhere other
+        // than the intended monitor — in practice this made the overlay
+        // effectively never really leave the primary monitor's territory,
+        // which is why `current_monitor()`-based screenshot capture always
+        // resolved to monitor 1 regardless of where the window looked like
+        // it was.
+        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+            global.x as i32,
+            global.y as i32,
         )));
         let screen_bottom = mon_y + screen_h;
         Some((global, screen_bottom))
@@ -501,6 +513,7 @@ fn notify_overlay_hidden() {
 struct RegionSelectOrigin {
     x: i32,
     y: i32,
+    scale_factor: f64,
 }
 
 /// Открывает прозрачное окно на bounding box всех мониторов (может пересекать
@@ -545,8 +558,6 @@ fn start_region_selection(app_handle: tauri::AppHandle) -> Result<(), String> {
         tauri::WebviewUrl::App("index.html".into()),
     )
     .title("Thuki — выбор области")
-    .position(bx as f64, by as f64)
-    .inner_size(bw as f64, bh as f64)
     .transparent(true)
     .decorations(false)
     .always_on_top(true)
@@ -555,8 +566,15 @@ fn start_region_selection(app_handle: tauri::AppHandle) -> Result<(), String> {
     .focused(true)
     .build()
     .map_err(|e| format!("не удалось открыть окно выбора области: {e}"))?;
+    // Set physical position/size to match the virtual desktop bounding box exactly.
+    // WebviewWindowBuilder::position/size take LOGICAL values; passing physical
+    // monitor coordinates as logical makes the window wrong on high-DPI displays.
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(bx, by)));
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(bw as u32, bh as u32)));
 
-    app_handle.manage(RegionSelectOrigin { x: bx, y: by });
+    let scale_factor = window.scale_factor().unwrap_or(1.0);
+
+    app_handle.manage(RegionSelectOrigin { x: bx, y: by, scale_factor });
     let _ = window.set_focus();
 
     // ── Watchdog: жёсткая страховка ──────────────────────────────────
@@ -611,13 +629,14 @@ fn finish_region_selection(
     const MIN_SELECTION_SIZE: u32 = 10;
 
     if width >= MIN_SELECTION_SIZE && height >= MIN_SELECTION_SIZE {
-        let rect = region_watch::WatchRect {
-            x: origin.x + x,
-            y: origin.y + y,
-            width,
-            height,
+        let sf = origin.scale_factor;
+        let rect = region_watch::Rect {
+            x: origin.x + (x as f64 * sf) as i32,
+            y: origin.y + (y as f64 * sf) as i32,
+            width: (width as f64 * sf) as i32,
+            height: (height as f64 * sf) as i32,
         };
-        region_watch::set_region_watch_rect(Some(rect), region_state);
+        let _ = region_watch::set_region_watch_rect(region_state, Some(rect));
     }
 
     close_region_select_window(&app_handle);
@@ -633,6 +652,54 @@ fn cancel_region_selection(app_handle: tauri::AppHandle) {
 }
 
 /// Quits the application, matching the tray menu "Quit" action.
+// ─── Monitor screenshot helpers ────────────────────────────────────────────
+
+/// Info about a monitor for the frontend context-menu.
+#[derive(Clone, serde::Serialize)]
+struct MonitorInfo {
+    index: usize,
+    name: String,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    scale_factor: f64,
+    is_primary: bool,
+}
+
+/// Returns all connected monitors so the frontend can render a
+/// right-click "Capture monitor → …" menu.
+#[tauri::command]
+fn list_monitors(app_handle: tauri::AppHandle) -> Result<Vec<MonitorInfo>, String> {
+    let monitors = app_handle.available_monitors().map_err(|e| e.to_string())?;
+    let primary = app_handle.primary_monitor().map_err(|e| e.to_string())?;
+    let primary_name = primary.as_ref().and_then(|m| m.name()).map(|s| s.to_string());
+
+    Ok(monitors
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let pos = m.position();
+            let size = m.size();
+            let name = m
+                .name()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("Monitor {}", i + 1));
+            let is_primary = Some(&name) == primary_name.as_ref();
+            MonitorInfo {
+                index: i,
+                name,
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height,
+                scale_factor: m.scale_factor(),
+                is_primary,
+            }
+        })
+        .collect())
+}
+
 #[tauri::command]
 fn quit_app(app_handle: tauri::AppHandle, generation: tauri::State<commands::GenerationState>) {
     generation.cancel();
@@ -1210,6 +1277,9 @@ pub fn run() {
             screenshot::capture_screenshot_command,
             #[cfg(not(coverage))]
             screenshot::capture_full_screen_command,
+            screenshot::capture_screen_region_command,
+            screenshot::capture_monitor_command,
+            list_monitors,
             notify_overlay_hidden,
             notify_frontend_ready,
             quit_app,
