@@ -510,84 +510,107 @@ fn notify_overlay_hidden() {
 /// Хранится как managed state, а не пересчитывается в `finish_region_selection`,
 /// чтобы не зависеть от того, что раскладка мониторов не поменяется за время
 /// одного выделения (дёшево и не может рассинхронизироваться).
-struct RegionSelectOrigin {
-    x: i32,
-    y: i32,
-    scale_factor: f64,
-}
+#[derive(Default)]
+struct RegionSelectOrigin(std::sync::Mutex<(i32, i32, f64)>);
 
 /// Открывает прозрачное окно на bounding box всех мониторов (может пересекать
 /// границы двух мониторов) для выделения прямоугольника мышью.
-///
-/// Координаты мониторов берутся так же, как в `show_overlay` (Windows-ветка) —
-/// то есть трактуются как логические один-в-один с физическими, без деления на
-/// `scale_factor`. Это сознательно повторяет уже существующее в файле
-/// упрощение, а не вводит новое несоответствие.
 #[tauri::command]
-fn start_region_selection(app_handle: tauri::AppHandle) -> Result<(), String> {
-    // Уже открыто — просто вернуть фокус вместо второго окна поверх первого.
-    if let Some(w) = app_handle.get_webview_window("region-select") {
-        let _ = w.set_focus();
-        return Ok(());
-    }
+async fn start_region_selection(
+    app_handle: tauri::AppHandle,
+    region_state: tauri::State<'_, region_watch::RegionWatchState>, // <--- ДОБАВИТЬ ЭТО
+) -> Result<(), String> {
+    // Сбрасываем старый прямоугольник, чтобы фронтенд ждал нового
+    let _ = region_watch::set_region_watch_rect(region_state, None);
+    
+    println!("[start_region_selection] called");
+    // ... дальше идет твой старый код
 
-    let monitors = app_handle
-        .available_monitors()
-        .map_err(|e| format!("не удалось получить список мониторов: {e}"))?;
-    if monitors.is_empty() {
-        return Err("не найдено ни одного монитора".to_string());
-    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let app_handle_clone = app_handle.clone();
+    
+    // Выполняем всё в главном потоке, чтобы избежать дедлока на Windows
+    let _ = app_handle.run_on_main_thread(move || {
+        println!("[start_region_selection] running on main thread...");
 
-    let mut min_x = i32::MAX;
-    let mut min_y = i32::MAX;
-    let mut max_x = i32::MIN;
-    let mut max_y = i32::MIN;
-    for m in &monitors {
-        let pos = m.position();
-        let size = m.size();
-        min_x = min_x.min(pos.x);
-        min_y = min_y.min(pos.y);
-        max_x = max_x.max(pos.x + size.width as i32);
-        max_y = max_y.max(pos.y + size.height as i32);
-    }
-    let (bx, by, bw, bh) = (min_x, min_y, (max_x - min_x).max(1), (max_y - min_y).max(1));
+        let monitors = match app_handle_clone.available_monitors() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("[start_region_selection] monitor error: {:?}", e);
+                let _ = tx.send(Err(format!("не удалось получить список мониторов: {}", e)));
+                return;
+            }
+        };
 
-    let window = tauri::WebviewWindowBuilder::new(
-        &app_handle,
-        "region-select",
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Thuki — выбор области")
-    .transparent(true)
-    .decorations(false)
-    .always_on_top(true)
-    .resizable(false)
-    .visible(true)
-    .focused(true)
-    .build()
-    .map_err(|e| format!("не удалось открыть окно выбора области: {e}"))?;
-    // Set physical position/size to match the virtual desktop bounding box exactly.
-    // WebviewWindowBuilder::position/size take LOGICAL values; passing physical
-    // monitor coordinates as logical makes the window wrong on high-DPI displays.
-    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(bx, by)));
-    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(bw as u32, bh as u32)));
+        if monitors.is_empty() {
+            let _ = tx.send(Err("не найдено ни одного монитора".to_string()));
+            return;
+        }
 
-    let scale_factor = window.scale_factor().unwrap_or(1.0);
+        let mut min_x = i32::MAX;
+        let mut min_y = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut max_y = i32::MIN;
+        for m in &monitors {
+            let pos = m.position();
+            let size = m.size();
+            min_x = min_x.min(pos.x);
+            min_y = min_y.min(pos.y);
+            max_x = max_x.max(pos.x + size.width as i32);
+            max_y = max_y.max(pos.y + size.height as i32);
+        }
+        let (bx, by, bw, bh) = (min_x, min_y, (max_x - min_x).max(1), (max_y - min_y).max(1));
 
-    app_handle.manage(RegionSelectOrigin { x: bx, y: by, scale_factor });
-    let _ = window.set_focus();
+        let window_result = tauri::WebviewWindowBuilder::new(
+            &app_handle_clone,
+            "region-select",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("ThukiWin — выбор области")
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .resizable(false)
+        .skip_taskbar(true)
+        .visible(false)
+        .focused(true)
+        .initialization_script(r#"window.__IS_REGION_SELECT__ = true;"#)
+        .build();
+
+        let window = match window_result {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("[start_region_selection] ОШИБКА СОЗДАНИЯ ОКНА: {:?}", e);
+                let _ = tx.send(Err(format!("не удалось открыть окно выбора области: {}", e)));
+                return;
+            }
+        };
+
+        println!("[start_region_selection] window built successfully");
+
+        // Устанавливаем физический размер и позицию
+        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(bx, by)));
+        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(bw as u32, bh as u32)));
+
+        // И только потом показываем
+        let _ = window.show();
+        let _ = window.set_focus();
+
+        let scale_factor = window.scale_factor().unwrap_or(1.0);
+        let origin = app_handle_clone.state::<RegionSelectOrigin>();
+        if let Ok(mut o) = origin.0.lock() {
+            *o = (bx, by, scale_factor);
+        }
+
+        println!("region-select: window opened at ({}, {}) size {}x{}", bx, by, bw, bh);
+
+        let _ = tx.send(Ok(()));
+    });
+
+    // Ждем завершения создания окна в главном потоке
+    let _ = rx.await.map_err(|e| format!("channel closed: {}", e))?;
 
     // ── Watchdog: жёсткая страховка ──────────────────────────────────
-    // Это окно без рамки, always-on-top, растянутое на всю виртуальную
-    // рабочую область — если по любой причине (ACL заблокировал invoke
-    // из этого окна, вебвью упало при загрузке, фронт кинул необработанное
-    // исключение до навешивания обработчика Esc и т.д.) фронт не сможет
-    // сам вызвать finish_/cancel_region_selection, у пользователя не будет
-    // НИКАКОГО способа закрыть это окно мышью или клавиатурой — только
-    // через диспетчер задач. Поэтому Rust сам гарантированно закрывает
-    // окно спустя таймаут, независимо от того, что происходит на фронте.
-    // Не идеальный UX при реально долгом выделении области, но
-    // несравнимо безопаснее полного зависания.
     const SELECTION_WATCHDOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
     let watchdog_handle = app_handle.clone();
     std::thread::spawn(move || {
@@ -629,10 +652,10 @@ fn finish_region_selection(
     const MIN_SELECTION_SIZE: u32 = 10;
 
     if width >= MIN_SELECTION_SIZE && height >= MIN_SELECTION_SIZE {
-        let sf = origin.scale_factor;
+        let (ox, oy, sf) = *origin.0.lock().map_err(|e| e.to_string())?;
         let rect = region_watch::Rect {
-            x: origin.x + (x as f64 * sf) as i32,
-            y: origin.y + (y as f64 * sf) as i32,
+            x: ox + (x as f64 * sf) as i32,
+            y: oy + (y as f64 * sf) as i32,
             width: (width as f64 * sf) as i32,
             height: (height as f64 * sf) as i32,
         };
@@ -1233,6 +1256,7 @@ pub fn run() {
 
             // ── Region watch (слежение за выделенной областью экрана) ──
             app.manage(region_watch::RegionWatchState::new());
+            app.manage(RegionSelectOrigin::default());
             region_watch::spawn_watch_loop(app.handle().clone());
 
             // ── Orphaned image cleanup (startup + periodic) ─────────

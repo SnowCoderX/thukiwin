@@ -3,7 +3,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,10 +40,10 @@ impl Default for RegionWatchConfig {
 }
 
 #[derive(Clone, serde::Serialize)]
-pub struct RegionWatchCaptureEvent {
+pub struct RegionWatchFramePayload {
     pub path: String,
     pub prompt: String,
-    pub timestamp: u64,
+    pub use_profile: bool,
 }
 
 pub struct RegionWatchState {
@@ -70,10 +70,9 @@ fn hash_pixels(pixels: &[u8]) -> u64 {
 
 pub fn spawn_watch_loop(app_handle: AppHandle) {
     thread::spawn(move || {
-        const IDLE_POLL_MS: u64 = 500;
-
         loop {
-            let (enabled, interval_ms, rect_opt, prompt) = {
+            // 1. Читаем конфиг
+            let (enabled, interval_ms, rect_opt, prompt, use_profile) = {
                 let state = app_handle.state::<RegionWatchState>();
                 let config = state.config.lock().unwrap();
                 (
@@ -81,24 +80,34 @@ pub fn spawn_watch_loop(app_handle: AppHandle) {
                     config.interval_ms,
                     config.rect.clone(),
                     config.prompt.clone(),
+                    config.use_profile,
                 )
             };
 
             if !enabled || rect_opt.is_none() {
-                thread::sleep(Duration::from_millis(IDLE_POLL_MS));
+                thread::sleep(Duration::from_millis(500));
                 continue;
             }
 
             let rect = match rect_opt {
                 Some(r) if r.is_valid() => r,
                 _ => {
-                    thread::sleep(Duration::from_millis(IDLE_POLL_MS));
+                    thread::sleep(Duration::from_millis(500));
                     continue;
                 }
             };
 
-            let start = Instant::now();
+            // 2. Если интервал 0, спим 500мс, чтобы не грузить CPU в ноль
+            if interval_ms == 0 {
+                thread::sleep(Duration::from_millis(500));
+                continue;
+            }
 
+            // 3. СТРОГО ЖДЕМ УКАЗАННЫЙ ИНТЕРВАЛ.
+            // Никаких захватов и проверок, пока время не вышло!
+            thread::sleep(Duration::from_millis(interval_ms));
+
+            // 4. Время вышло — делаем захват
             match crate::windows_screenshot::capture_monitor_pixels(
                 rect.x, rect.y, rect.width as u32, rect.height as u32,
             ) {
@@ -115,51 +124,39 @@ pub fn spawn_watch_loop(app_handle: AppHandle) {
                         changed
                     };
 
-                    if !should_emit {
-                        let elapsed = start.elapsed().as_millis() as u64;
-                        if elapsed < interval_ms {
-                            thread::sleep(Duration::from_millis(interval_ms - elapsed));
+                    if should_emit {
+                        let base_dir = match app_handle.path().app_data_dir() {
+                            Ok(d) => d,
+                            Err(e) => {
+                                eprintln!("[region_watch] app_data_dir error: {}", e);
+                                continue;
+                            }
+                        };
+
+                        let watch_dir = base_dir.join("region_watch");
+                        let _ = std::fs::create_dir_all(&watch_dir);
+
+                        let timestamp = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+
+                        let filename = format!("capture_{}.png", timestamp);
+                        let path = watch_dir.join(&filename);
+
+                        match save_rgba_to_file(width, height, rgba, &path) {
+                            Ok(()) => {
+                                let _ = app_handle.emit("thuki://region-watch-frame", RegionWatchFramePayload {
+                                    path: path.to_string_lossy().to_string(),
+                                    prompt: prompt.clone(),
+                                    use_profile,
+                                });
+                            }
+                            Err(e) => eprintln!("[region_watch] save error: {}", e),
                         }
-                        continue;
-                    }
-
-                    let base_dir = match app_handle.path().app_data_dir() {
-                        Ok(d) => d,
-                        Err(e) => {
-                            eprintln!("[region_watch] app_data_dir error: {}", e);
-                            thread::sleep(Duration::from_millis(interval_ms));
-                            continue;
-                        }
-                    };
-
-                    let watch_dir = base_dir.join("region_watch");
-                    let _ = std::fs::create_dir_all(&watch_dir);
-
-                    let timestamp = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-
-                    let filename = format!("capture_{}.png", timestamp);
-                    let path = watch_dir.join(&filename);
-
-                    match save_rgba_to_file(width, height, rgba, &path) {
-                        Ok(()) => {
-                            let _ = app_handle.emit("region-watch-capture", RegionWatchCaptureEvent {
-                                path: path.to_string_lossy().to_string(),
-                                prompt: prompt.clone(),
-                                timestamp,
-                            });
-                        }
-                        Err(e) => eprintln!("[region_watch] save error: {}", e),
                     }
                 }
                 Err(e) => eprintln!("[region_watch] capture error: {}", e),
-            }
-
-            let elapsed = start.elapsed().as_millis() as u64;
-            if elapsed < interval_ms {
-                thread::sleep(Duration::from_millis(interval_ms - elapsed));
             }
         }
     });

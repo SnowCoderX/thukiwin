@@ -346,10 +346,14 @@ export function AskBarView({
     top: number;
     monitors: Monitor[];
   } | null>(null);
+  const [menuLayout, setMenuLayout] = useState<{ left: number; top: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!monitorMenu) return;
+    if (!monitorMenu) {
+      setMenuLayout(null);
+      return;
+    }
     const close = () => setMonitorMenu(null);
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === 'Escape') close();
@@ -378,13 +382,12 @@ export function AskBarView({
     if (top + rect.height > window.innerHeight - 8) {
       top = monitorMenu.top - rect.height - 4;
     }
+
     // Clamp to viewport
     left = Math.max(8, left);
     top = Math.max(8, top);
 
-    menuRef.current.style.left = `${left}px`;
-    menuRef.current.style.top = `${top}px`;
-    menuRef.current.style.visibility = 'visible';
+    setMenuLayout({ left, top });
   }, [monitorMenu]);
 
   const handleScreenshotContextMenu = useCallback(
@@ -832,7 +835,11 @@ export function AskBarView({
         <div
           ref={menuRef}
           className="fixed z-50 rounded-lg border border-surface-border bg-surface-base shadow-chat py-1 min-w-[200px]"
-          style={{ left: monitorMenu.left, top: monitorMenu.top, visibility: 'hidden' }}
+          style={{
+            left: menuLayout?.left ?? monitorMenu.left,
+            top: menuLayout?.top ?? monitorMenu.top,
+            visibility: menuLayout ? 'visible' : 'hidden',
+          }}
           onClick={(e) => e.stopPropagation()}
         >
           {monitorMenu.monitors.map((m, i) => (

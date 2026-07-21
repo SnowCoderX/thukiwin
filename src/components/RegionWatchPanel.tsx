@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { invoke, convertFileSrc, Channel } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 
 export type WatchRect = { x: number; y: number; width: number; height: number };
 
@@ -9,12 +8,6 @@ export type RegionWatchConfig = {
   prompt: string;
   use_profile: boolean;
   interval_ms: number;
-};
-
-export type RegionWatchCaptureEvent = {
-  path: string;
-  prompt: string;
-  timestamp: number;
 };
 
 const MIN_INTERVAL_MS = 300;
@@ -45,7 +38,6 @@ export function RegionWatchPanel({ onClose }: Props) {
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
   const [selectionRect, setSelectionRect] = useState<WatchRect | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [lastCapture, setLastCapture] = useState<RegionWatchCaptureEvent | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -71,42 +63,6 @@ export function RegionWatchPanel({ onClose }: Props) {
     void refresh();
   }, [refresh]);
 
-  // Слушаем события от фонового потока и автоматически шлём в LLM
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    const setup = async () => {
-      unlisten = await listen<RegionWatchCaptureEvent>('region-watch-capture', (ev) => {
-        setLastCapture(ev.payload);
-
-        if (ev.payload.prompt.trim()) {
-          const channel = new Channel();
-          channel.onmessage = (msg: any) => {
-            // Можно добавить обработку стриминга здесь
-            // msg: { type: 'Token'|'Done'|'Error'|..., data: ... }
-            if (msg?.type === 'Done') {
-              console.log('[region-watch] LLM response complete');
-            }
-          };
-
-          invoke('ask_ollama', {
-            message: ev.payload.prompt,
-            quoted_text: null,
-            image_paths: [ev.payload.path],
-            think: false,
-            safe_mode: false,
-            agent_enabled: false,
-            profile_system_prompt: null,
-            onEvent: channel,
-          }).catch((e) => {
-            console.error('Failed to send region watch capture to LLM:', e);
-          });
-        }
-      });
-    };
-    void setup();
-    return () => { unlisten?.(); };
-  }, []);
-
   const persist = useCallback(async (next: RegionWatchConfig) => {
     setConfig(next);
     setSaving(true);
@@ -120,13 +76,27 @@ export function RegionWatchPanel({ onClose }: Props) {
   const handleSelectArea = useCallback(async () => {
     setSelecting(true);
     try {
-      const path = await invoke<string>('capture_desktop_for_selection');
-      const url = convertFileSrc(path);
-      setScreenshotUrl(url);
-      setSelectionRect(null);
+      await invoke('start_region_selection');
+      // Poll until user finishes selection or timeout
+      const poll = setInterval(async () => {
+        try {
+          const cfg = await invoke<RegionWatchConfig>('get_region_watch_config');
+          setConfig(cfg);
+          if (cfg.rect) {
+            clearInterval(poll);
+            setSelecting(false);
+          }
+        } catch {
+          clearInterval(poll);
+          setSelecting(false);
+        }
+      }, 500);
+      setTimeout(() => {
+        clearInterval(poll);
+        setSelecting(false);
+      }, 30000);
     } catch (e) {
-      console.error('Failed to capture desktop:', e);
-    } finally {
+      console.error('Failed to start region selection:', e);
       setSelecting(false);
     }
   }, []);
@@ -488,13 +458,6 @@ export function RegionWatchPanel({ onClose }: Props) {
           className="w-20 rounded-md border border-surface-border bg-surface-base px-2 py-1 text-xs"
         />
       </label>
-
-      {lastCapture && (
-        <div className="text-xs text-surface-muted border-t border-surface-border pt-2">
-          Последний скрин: {new Date(lastCapture.timestamp).toLocaleTimeString()}
-          {lastCapture.prompt ? ` — «${lastCapture.prompt.slice(0, 30)}…»` : ''}
-        </div>
-      )}
 
       <button
         type="button"

@@ -1,28 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 
-/**
- * Full-screen overlay for region selection.
- * Rendered inside the "region-select" Tauri window (see start_region_selection
- * in lib.rs). Tracks mouse drag to build a rectangle and sends it back to
- * Rust via finish_region_selection. Escape cancels.
- */
 export default function RegionSelect() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [selection, setSelection] = useState<{
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  } | null>(null);
+  const [selection, setSelection] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const startPos = useRef<{ x: number; y: number } | null>(null);
   const isDragging = useRef(false);
-
-  useEffect(() => {
-    // Grab focus so keyboard events work immediately
-    getCurrentWindow().setFocus().catch(() => {});
-  }, []);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     isDragging.current = true;
@@ -42,12 +24,10 @@ export default function RegionSelect() {
   const handleMouseUp = useCallback(() => {
     if (!isDragging.current) return;
     isDragging.current = false;
-
     const sel = selection;
     setSelection(null);
 
     if (!sel || sel.w < 10 || sel.h < 10) {
-      // Too small — treat as cancel
       invoke('cancel_region_selection').catch(console.error);
       return;
     }
@@ -73,9 +53,13 @@ export default function RegionSelect() {
 
   return (
     <div
-      ref={containerRef}
       className="fixed inset-0 cursor-crosshair select-none"
-      style={{ background: 'rgba(0,0,0,0.01)' }}
+      style={{
+        background: 'rgba(0, 0, 0, 0.35)',
+        outline: 'none',
+        border: 'none',
+        boxShadow: 'none'
+      }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -88,17 +72,18 @@ export default function RegionSelect() {
             top: selection.y,
             width: selection.w,
             height: selection.h,
-            background: 'rgba(59,130,246,0.15)',
-            border: '2px dashed rgba(255,255,255,0.9)',
-            boxShadow: '0 0 0 9999px rgba(0,0,0,0.35)',
+            border: '2px solid #3b82f6',
+            backgroundColor: 'rgba(59, 130, 246, 0.2)',
+            boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.35)',
+            outline: 'none',
           }}
         />
       )}
       <div
-        className="absolute bottom-6 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full text-white/80 text-xs font-medium select-none pointer-events-none"
-        style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+        className="absolute bottom-10 left-1/2 -translate-x-1/2 px-5 py-2 rounded-xl text-white text-sm font-medium select-none pointer-events-none"
+        style={{ background: 'rgba(0, 0, 0, 0.8)', outline: 'none' }}
       >
-        Drag to select region • Esc to cancel
+        🖱 Выделите область • Esc для отмены
       </div>
     </div>
   );

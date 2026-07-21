@@ -37,7 +37,7 @@ import { RegionWatchPanel } from './components/RegionWatchPanel';
 import RegionSelect from './components/RegionSelect'; // путь подстрой под себя
 
 /** Fallback model name used before get_model_config resolves at startup. */
-const DEFAULT_MODEL_FALLBACK = 'gemini-3-flash-preview';
+const DEFAULT_MODEL_FALLBACK = 'qwen2.5-vl';
 
 const OVERLAY_VISIBILITY_EVENT = 'thuki://visibility';
 const ONBOARDING_EVENT = 'thuki://onboarding';
@@ -129,18 +129,13 @@ type RegionWatchFramePayload = {
  * This wrapper is strictly responsible for layout morphing, global hotkeys,
  * and window visibility state, delegating UI rendering logic to the view components.
  */
-function App() {
+function MainApp() {
   const [query, setQuery] = useState('');
   const [overlayState, setOverlayState] = useState<OverlayState>('hidden');
   /** Non-null when the backend signals onboarding is needed; holds the current stage. */
   const [onboardingStage, setOnboardingStage] =
     useState<OnboardingStage | null>(null);
 
-  const [windowLabel, setWindowLabel] = useState('');
-
-  useEffect(() => {
-    setWindowLabel(getCurrentWindow().label);
-  }, []);
 
     
   /**
@@ -1582,22 +1577,25 @@ function App() {
       // /screen, здесь нет "ожидающего" пузыря в чате — кадры приходят в
       // фоне, а не по явному действию пользователя, так что не блокируем
       // их, если прямо сейчас идёт генерация (подождём следующего кадра).
-      unlistenRegionWatch = await listen<RegionWatchFramePayload>(
+       unlistenRegionWatch = await listen<RegionWatchFramePayload>(
         REGION_WATCH_FRAME_EVENT,
         ({ payload }) => {
           if (isGeneratingRef.current) return;
+          
+          // Берем твой промпт из поля ввода. Если оно пустое — даем дефолтную команду.
           const displayText =
             payload.prompt.trim() ||
             'Опиши, что изменилось в выбранной области экрана.';
+          
           ask(
-            displayText,
-            undefined,
-            [payload.path],
-            undefined,
-            undefined,
-            safeModeRef.current,
-            payload.use_profile ? getProfileSystemPrompt() : undefined,
-            agentEnabledRef.current,
+            displayText,       // Твой промпт идет сюда
+            undefined, 
+            [payload.path], 
+            false, 
+            undefined, 
+            false, 
+            "__RAW_OCR__",     // Маркер, чтобы Rust вырубил промпт Туки
+            false, 
           );
         },
       );
@@ -1910,11 +1908,6 @@ function App() {
     );
   }, []);
 
-  // Render the region-selection overlay when this is the region-select window.
-  if (windowLabel === 'region-select') {
-    return <RegionSelect />;
-  }
-
   if (onboardingStage !== null) {
     return (
       <OnboardingView
@@ -2191,6 +2184,15 @@ function App() {
       />
     </div>
   );
+}
+
+function App() {
+  const isRegionSelect = (window as any).__IS_REGION_SELECT__ === true;
+  document.title = isRegionSelect ? 'REGION-SELECT' : 'THUKI-MAIN';
+  if (isRegionSelect) {
+    return <RegionSelect />;
+  }
+  return <MainApp />;
 }
 
 export default App;
