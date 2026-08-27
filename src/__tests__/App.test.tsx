@@ -47,6 +47,9 @@ describe('App', () => {
     });
 
     await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /развернуть настройки/i }));
+    });
+    await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /enable wake word/i }));
     });
 

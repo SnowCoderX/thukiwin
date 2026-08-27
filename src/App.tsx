@@ -60,6 +60,7 @@ const MIN_VOICE_RECORDING_MS = 1000;
 const SAFE_MODE_STORAGE_KEY = 'thuki_safe_mode';
 const AGENT_ENABLED_STORAGE_KEY = 'thuki_agent_enabled';
 const WAKE_WORD_ENABLED_STORAGE_KEY = 'thuki_wake_word_enabled';
+const GLOBAL_HOTKEY_ENABLED_STORAGE_KEY = 'thuki_global_hotkey_enabled';
 const HEADPHONES_MODE_STORAGE_KEY = 'thuki_headphones_mode'; 
 const ACTIVE_MODEL_STORAGE_KEY = 'thuki_active_model';
 
@@ -357,6 +358,12 @@ function MainApp() {
     const stored = localStorage.getItem(WAKE_WORD_ENABLED_STORAGE_KEY);
     return stored !== 'off';
   });
+  // Отдельный от wake-word тумблер: двойной Ctrl для вызова оверлея откуда угодно.
+  // По умолчанию включен — так было до разделения на два тумблера.
+  const [globalHotkeyEnabled, setGlobalHotkeyEnabled] = useState(() => {
+    const stored = localStorage.getItem(GLOBAL_HOTKEY_ENABLED_STORAGE_KEY);
+    return stored !== 'off';
+  });
   const [headphonesMode, setHeadphonesMode] = useState(() => {
     const stored = localStorage.getItem(HEADPHONES_MODE_STORAGE_KEY);
     return stored === 'on';
@@ -428,6 +435,11 @@ function MainApp() {
   }, [wakeWordEnabled]);
 
   useEffect(() => {
+    localStorage.setItem(GLOBAL_HOTKEY_ENABLED_STORAGE_KEY, globalHotkeyEnabled ? 'on' : 'off');
+    void invoke('set_global_hotkey_enabled', { enabled: globalHotkeyEnabled });
+  }, [globalHotkeyEnabled]);
+
+  useEffect(() => {
     localStorage.setItem(HEADPHONES_MODE_STORAGE_KEY, headphonesMode ? 'on' : 'off');
   }, [headphonesMode]);
 
@@ -441,6 +453,10 @@ function MainApp() {
 
   const handleWakeWordToggle = useCallback(() => {
     setWakeWordEnabled((current) => !current);
+  }, []);
+
+  const handleGlobalHotkeyToggle = useCallback(() => {
+    setGlobalHotkeyEnabled((current) => !current);
   }, []);
 
   const handleHeadphonesModeToggle = useCallback(() => {
@@ -2144,6 +2160,8 @@ function MainApp() {
                   onAgentEnabledToggle={handleAgentEnabledToggle}
                   wakeWordEnabled={wakeWordEnabled}
                   onWakeWordToggle={handleWakeWordToggle}
+                  globalHotkeyEnabled={globalHotkeyEnabled}
+                  onGlobalHotkeyToggle={handleGlobalHotkeyToggle}
                   headphonesMode={headphonesMode}
                   onHeadphonesModeToggle={handleHeadphonesModeToggle}
                   isDragOver={isDragOver ?? undefined}

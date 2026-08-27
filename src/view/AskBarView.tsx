@@ -267,6 +267,8 @@ interface AskBarViewProps {
   onAgentEnabledToggle: () => void;
   wakeWordEnabled?: boolean;
   onWakeWordToggle?: () => void;
+  globalHotkeyEnabled?: boolean;
+  onGlobalHotkeyToggle?: () => void;
   headphonesMode?: boolean;
   onHeadphonesModeToggle?: () => void;
   isDragOver?: 'normal' | 'max';
@@ -306,6 +308,8 @@ export function AskBarView({
   onAgentEnabledToggle,
   wakeWordEnabled = true,
   onWakeWordToggle = () => {},
+  globalHotkeyEnabled = true,
+  onGlobalHotkeyToggle = () => {},
   headphonesMode = false,
   onHeadphonesModeToggle = () => {},
   isDragOver,
@@ -711,6 +715,8 @@ export function AskBarView({
             onAgentEnabledToggle={onAgentEnabledToggle}
             wakeWordEnabled={wakeWordEnabled}
             onWakeWordToggle={onWakeWordToggle}
+            globalHotkeyEnabled={globalHotkeyEnabled}
+            onGlobalHotkeyToggle={onGlobalHotkeyToggle}
             headphonesMode={headphonesMode}
             onHeadphonesModeToggle={onHeadphonesModeToggle}
             disabled={isBusy}

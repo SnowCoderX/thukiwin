@@ -463,6 +463,22 @@ fn global_activation_enabled(is_visible: bool) -> bool {
     is_visible || GLOBAL_HOTKEY_ENABLED.load(Ordering::SeqCst)
 }
 
+/// Включает/выключает глобальную активацию по двойному Ctrl. Независимый
+/// тумблер от wake-word — синкается с фронтом отдельно (см. AgentSafeToggle).
+#[tauri::command]
+fn set_global_hotkey_enabled(enabled: bool) {
+    GLOBAL_HOTKEY_ENABLED.store(enabled, Ordering::SeqCst);
+    eprintln!(
+        "global-hotkey: double-Ctrl активация {}",
+        if enabled { "включена" } else { "выключена" }
+    );
+}
+
+#[tauri::command]
+fn get_global_hotkey_enabled() -> bool {
+    GLOBAL_HOTKEY_ENABLED.load(Ordering::SeqCst)
+}
+
 fn toggle_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
     if OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst) {
         request_overlay_hide(app_handle);
@@ -1331,6 +1347,8 @@ pub fn run() {
             voice::cancel_voice_recording,
             wakeword::set_wake_word_enabled,
             wakeword::get_wake_word_enabled,
+            set_global_hotkey_enabled,
+            get_global_hotkey_enabled,
             region_watch::get_region_watch_config,
             region_watch::set_region_watch_config,
             region_watch::set_region_watch_rect,
