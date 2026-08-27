@@ -35,6 +35,28 @@ describe('App', () => {
     expect(invoke).toHaveBeenCalledWith('get_model_config');
   });
 
+  it('syncs the wake-word toggle to the backend', async () => {
+    localStorage.setItem('thuki_wake_word_enabled', 'off');
+
+    render(<App />);
+    await act(async () => {});
+    await showOverlay();
+
+    expect(invoke).toHaveBeenCalledWith('set_wake_word_enabled', {
+      enabled: false,
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /enable wake word/i }));
+    });
+
+    expect(invoke).toHaveBeenCalledWith('set_wake_word_enabled', {
+      enabled: true,
+    });
+
+    localStorage.removeItem('thuki_wake_word_enabled');
+  });
+
   it('switches the active model from the ask bar', async () => {
     enableChannelCaptureWithResponses({
       get_model_config: {

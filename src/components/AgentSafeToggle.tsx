@@ -90,6 +90,7 @@ export function AgentSafeToggle({
           type="button"
           onClick={onWakeWordToggle}
           disabled={disabled}
+          aria-label={wakeWordEnabled ? 'Disable wake word' : 'Enable wake word'}
           className={`shrink-0 w-7 h-7 flex items-center justify-center transition-colors duration-150 cursor-pointer outline-none ${
             wakeWordEnabled
               ? 'text-emerald-400 bg-emerald-500/10'

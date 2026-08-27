@@ -66,7 +66,7 @@ pub struct WakeWordState {
 impl WakeWordState {
     pub fn new() -> Self {
         Self {
-            enabled: Arc::new(AtomicBool::new(true)),
+            enabled: Arc::new(AtomicBool::new(false)),
             suppressed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -283,16 +283,16 @@ fn match_wake_word(text: &str, candidates: &[&str]) -> Option<String> {
     }
 
     for i in 0..words.len() {
-        if is_wake_word_match(words[i], candidates) {
-            let remainder = words.get(i + 1..).unwrap_or(&[]).join(" ");
-            return Some(remainder);
-        }
         if i + 1 < words.len() {
             let joined = format!("{}{}", words[i], words[i + 1]);
             if is_wake_word_match(&joined, candidates) {
                 let remainder = words.get(i + 2..).unwrap_or(&[]).join(" ");
                 return Some(remainder);
             }
+        }
+        if is_wake_word_match(words[i], candidates) {
+            let remainder = words.get(i + 1..).unwrap_or(&[]).join(" ");
+            return Some(remainder);
         }
     }
 
@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn wake_word_state_defaults_enabled_and_not_suppressed() {
         let state = WakeWordState::new();
-        assert!(state.enabled.load(Ordering::SeqCst));
+        assert!(!state.enabled.load(Ordering::SeqCst));
         assert!(!state.suppressed.load(Ordering::SeqCst));
     }
 }

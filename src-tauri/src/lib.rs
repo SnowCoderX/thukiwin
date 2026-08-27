@@ -108,6 +108,10 @@ static OVERLAY_INTENDED_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// registered, so the show event is guaranteed to have a listener.
 static LAUNCH_SHOW_PENDING: AtomicBool = AtomicBool::new(true);
 
+/// Enables global keyboard activation such as double-tap Ctrl. Synced from
+/// the frontend's saved setting; starts disabled until that sync happens.
+static GLOBAL_HOTKEY_ENABLED: AtomicBool = AtomicBool::new(false);
+
 /// Payload emitted to the frontend on every visibility transition.
 #[derive(Clone, serde::Serialize)]
 struct VisibilityPayload {
@@ -455,6 +459,10 @@ fn show_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationCo
 ///
 /// Uses an atomic flag as the single source of truth for intended visibility,
 /// which avoids race conditions with the native panel state during animations.
+fn global_activation_enabled(is_visible: bool) -> bool {
+    is_visible || GLOBAL_HOTKEY_ENABLED.load(Ordering::SeqCst)
+}
+
 fn toggle_overlay(app_handle: &tauri::AppHandle, ctx: crate::context::ActivationContext) {
     if OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst) {
         request_overlay_hide(app_handle);
@@ -1097,6 +1105,12 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             init_panel(app.app_handle());
 
+            // ── Wake-word state ─────────────────────────────────────
+            // Synced from the frontend's saved wake-word setting on startup.
+            // Starts disabled so a saved "off" cannot briefly listen before
+            // the frontend sends its persisted value.
+            app.manage(wakeword::WakeWordState::new());
+
             // ── System tray icon + menu ───────────────────────────────────
             let show_item = MenuItem::with_id(app, "show", "Open Thuki", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -1151,6 +1165,9 @@ pub fn run() {
                         // simulating Cmd+C against Thuki's own WebView would produce
                         // a macOS alert sound.
                         let is_visible = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
+                        if !global_activation_enabled(is_visible) {
+                            return;
+                        }
                         let handle = app_handle.clone();
                         let handle2 = app_handle.clone();
                         // Dispatch context capture to a dedicated thread so the event
@@ -1181,6 +1198,9 @@ pub fn run() {
                 let activator = windows_activator::OverlayActivator::new();
                 activator.start(move || {
                     let is_visible = OVERLAY_INTENDED_VISIBLE.load(Ordering::SeqCst);
+                    if !global_activation_enabled(is_visible) {
+                        return;
+                    }
                     let handle = app_handle.clone();
                     let handle2 = app_handle.clone();
                     if is_visible {
@@ -1242,7 +1262,6 @@ pub fn run() {
             app.manage(voice_state);
 
             // ── Wake-word listener (фоновое "туки") ──────────────────
-            app.manage(wakeword::WakeWordState::new());
             let wake_word_model_path = std::env::var("WAKE_WORD_MODEL_PATH")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| {

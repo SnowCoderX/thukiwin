@@ -220,7 +220,16 @@ function MainApp() {
       // отправляем её напрямую в ask(), минуя текстовое поле (руки свободны).
       lastVoiceChunkRef.current = '';
       if (text.trim()) {
-        ask(text.trim(), undefined, undefined, undefined, undefined, safeMode, undefined, agentEnabled);
+        ask(
+          text.trim(),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          safeMode,
+          getProfileSystemPrompt(),
+          agentEnabled,
+        );
       }
       return;
     }
@@ -415,6 +424,7 @@ function MainApp() {
 
   useEffect(() => {
     localStorage.setItem(WAKE_WORD_ENABLED_STORAGE_KEY, wakeWordEnabled ? 'on' : 'off');
+    void invoke('set_wake_word_enabled', { enabled: wakeWordEnabled });
   }, [wakeWordEnabled]);
 
   useEffect(() => {
